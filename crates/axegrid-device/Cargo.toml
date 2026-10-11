@@ -19,7 +19,7 @@ midi = ["dep:midir"]
 [dependencies]
 axegrid-model = { path = "../axegrid-model" }
 axegrid-sysex = { path = "../axegrid-sysex" }
-midir = { version = "0.10", optional = true }
+midir = { version = "0.11", optional = true }
 
 [lints]
 workspace = true

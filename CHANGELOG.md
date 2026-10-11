@@ -8,7 +8,7 @@ listed under "Changed".
 
 ## [Unreleased]
 
-## [0.1.0] - not yet released
+## [0.1.0] - 2026-10-11
 
 The first public version: an early alpha.
 

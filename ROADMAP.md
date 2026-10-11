@@ -77,7 +77,7 @@ no known way to hang the unit.
 
 ### 0.1: first public alpha (this release)
 
-Everything in the [changelog](CHANGELOG.md#010---not-yet-released).
+Everything in the [changelog](CHANGELOG.md#010---2026-10-11).
 
 ### 0.2: safe daily editing
 

@@ -1,0 +1,27 @@
+# Build output
+target/
+dist/
+
+# Editors and operating systems
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Control-channel tokens and local captures
+*.token
+*.syx
+
+# Reverse-engineering working material never belongs in this repository
+# (see docs/clean-room.md).
+evidence/
+re-tools/
+
+# Secrets and local configuration: never commit these
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx

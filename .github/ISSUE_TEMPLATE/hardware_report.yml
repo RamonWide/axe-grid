@@ -1,0 +1,65 @@
+name: Hardware report
+description: Tell us how Axe-Grid behaves with your unit and system, even if everything works.
+labels: [hardware]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These reports are how the "tested on" list grows. Before testing, back up your unit and
+        work in a preset slot you do not need. See the two rules in
+        [CONTRIBUTING.md](https://github.com/RamonWide/axe-grid/blob/main/CONTRIBUTING.md#hardware-reports).
+  - type: dropdown
+    id: model
+    attributes:
+      label: Device
+      options:
+        - Axe-Fx II XL+
+        - Axe-Fx II XL
+        - Axe-Fx II Mark II
+        - Axe-Fx II Mark I
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: "macOS 15.1 on Apple silicon"
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options:
+        - USB
+        - MIDI interface (5-pin cables)
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Axe-Grid version
+    validations:
+      required: true
+  - type: checkboxes
+    id: works
+    attributes:
+      label: What worked?
+      options:
+        - label: The unit's port appears and Connect succeeds
+        - label: The preset name and the grid match the unit's own display
+        - label: Turning a knob in Axe-Grid changes the sound and the unit's display
+        - label: Switching scenes, bypass and X/Y
+        - label: Placing, moving and cabling blocks
+        - label: Tuner and tempo
+  - type: textarea
+    id: details
+    attributes:
+      label: What did not work, or anything you noticed
+      description: For protocol findings, include the exact bytes sent and received in hex, and which item of spec/SPEC.md they concern.

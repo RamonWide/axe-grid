@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Axe-Grid">
+  <rect width="512" height="512" rx="96" fill="#14181e"/>
+  <path d="M16 244 H496" stroke="#d8dce2" stroke-width="6" fill="none"/>
+  <path d="M180 244 C200 244 176 356 196 356 M316 356 C336 356 312 244 332 244" stroke="#d8dce2" stroke-width="6" fill="none"/>
+  <rect x="60" y="92" width="120" height="80" rx="14" fill="none" stroke="#2c323c" stroke-width="4"/>
+  <rect x="60" y="204" width="120" height="80" rx="14" fill="#c8553d"/>
+  <rect x="60" y="316" width="120" height="80" rx="14" fill="none" stroke="#2c323c" stroke-width="4"/>
+  <rect x="196" y="92" width="120" height="80" rx="14" fill="none" stroke="#2c323c" stroke-width="4"/>
+  <rect x="196" y="204" width="120" height="80" rx="14" fill="#3a7fc4"/>
+  <rect x="196" y="316" width="120" height="80" rx="14" fill="#4f8f6f"/>
+  <rect x="332" y="92" width="120" height="80" rx="14" fill="none" stroke="#2c323c" stroke-width="4"/>
+  <rect x="332" y="204" width="120" height="80" rx="14" fill="#2e9c9c"/>
+  <rect x="332" y="316" width="120" height="80" rx="14" fill="none" stroke="#2c323c" stroke-width="4"/>
+  <circle cx="32" cy="244" r="13" fill="#14181e" stroke="#f0b440" stroke-width="6"/>
+  <circle cx="480" cy="244" r="13" fill="#14181e" stroke="#f0b440" stroke-width="6"/>
+</svg>

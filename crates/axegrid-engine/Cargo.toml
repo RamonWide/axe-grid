@@ -1,0 +1,25 @@
+[package]
+name = "axegrid-engine"
+description = "Editor state and the command registry every front end dispatches into"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+axegrid-device.workspace = true
+axegrid-model.workspace = true
+axegrid-sysex.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+axegrid-sysex.workspace = true
+
+[lints]
+workspace = true

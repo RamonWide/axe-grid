@@ -1,0 +1,20 @@
+[package]
+name = "axegrid-model"
+description = "Axe-Fx II blocks, parameters, grid and definition cache"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+axegrid-sysex = { path = "../axegrid-sysex" }
+serde_json = "1"
+
+[lints]
+workspace = true

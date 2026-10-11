@@ -1,0 +1,72 @@
+name: Bug report
+description: Something does not work, or works differently from what you expected.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for taking the time. You do not need to be a programmer to fill this in.
+        Please do not attach presets, cab files or firmware you did not make yourself.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+      placeholder: |
+        1. Connected to the unit
+        2. Clicked the Amp block
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Axe-Grid version
+      description: The version in the name of the file you downloaded, or the commit if you built it yourself.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Device
+      options:
+        - Axe-Fx II XL+
+        - Axe-Fx II XL
+        - Axe-Fx II (Mark I or II)
+        - The built-in simulator
+        - Not connected
+    validations:
+      required: true
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware version of the unit
+      description: Shown next to the model name at the top of the Axe-Grid window once connected.
+      placeholder: "32.00"
+  - type: dropdown
+    id: connection
+    attributes:
+      label: How is the unit connected?
+      options:
+        - USB
+        - MIDI interface (5-pin cables)
+        - Not applicable
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, the message in the status bar at the bottom of the window, or other details.

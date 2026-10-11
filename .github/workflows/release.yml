@@ -1,0 +1,134 @@
+name: Release
+
+# Push a tag such as v0.2.0 to build every download and open a draft release.
+# "Run workflow" builds the same files as artifacts without releasing.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-x64, os: windows-latest }
+          - { name: macos-universal, os: macos-latest }
+          - { name: linux-x86_64, os: ubuntu-22.04 }
+          - { name: linux-aarch64, os: ubuntu-22.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version
+        id: version
+        shell: bash
+        env:
+          PACKAGE_SUFFIX: ${{ matrix.name }}
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [ -z "$version" ]; then echo "no version in Cargo.toml" >&2; exit 1; fi
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "package=axe-grid-$version-$PACKAGE_SUFFIX" >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux build packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Build (Windows, Linux)
+        if: runner.os != 'macOS'
+        run: cargo build --release --locked -p axegrid -p axegrid-cli
+
+      - name: Build (macOS, both architectures)
+        if: runner.os == 'macOS'
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --release --locked -p axegrid -p axegrid-cli --target aarch64-apple-darwin
+          cargo build --release --locked -p axegrid -p axegrid-cli --target x86_64-apple-darwin
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          PACKAGE: ${{ steps.version.outputs.package }}
+        run: |
+          mkdir -p "dist/$PACKAGE"
+          cp target/release/axegrid.exe target/release/axegrid-cli.exe "dist/$PACKAGE/"
+          cp LICENSE ATTRIBUTION.md "dist/$PACKAGE/"
+          cp docs/install.md "dist/$PACKAGE/INSTALL.md"
+          (cd dist && 7z a -tzip "$PACKAGE.zip" "$PACKAGE")
+          rm -r "dist/$PACKAGE"
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PACKAGE: ${{ steps.version.outputs.package }}
+        run: sh packaging/macos/bundle.sh "$VERSION" "$PACKAGE"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        env:
+          PACKAGE: ${{ steps.version.outputs.package }}
+        run: |
+          mkdir -p "dist/$PACKAGE"
+          cp target/release/axegrid target/release/axegrid-cli "dist/$PACKAGE/"
+          cp packaging/linux/axe-grid.desktop packaging/linux/install-desktop-entry.sh "dist/$PACKAGE/"
+          cp assets/icon/axe-grid.svg "dist/$PACKAGE/"
+          cp LICENSE ATTRIBUTION.md "dist/$PACKAGE/"
+          cp docs/install.md "dist/$PACKAGE/INSTALL.md"
+          chmod +x "dist/$PACKAGE/axegrid" "dist/$PACKAGE/axegrid-cli" "dist/$PACKAGE/install-desktop-entry.sh"
+          tar -C dist -czf "dist/$PACKAGE.tar.gz" "$PACKAGE"
+          rm -r "dist/$PACKAGE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.package }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: build
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum axe-grid-* > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/axe-grid-*
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft --generate-notes \
+            --title "Axe-Grid ${GITHUB_REF_NAME#v}"

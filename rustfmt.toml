@@ -1,0 +1,3 @@
+# Matches how the code was written: wide lines, few forced breaks.
+max_width = 120
+use_small_heuristics = "Max"

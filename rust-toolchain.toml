@@ -1,0 +1,5 @@
+# The toolchain CI and the release builds use. `rust-version` in Cargo.toml
+# is the oldest compiler the code is expected to build with.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

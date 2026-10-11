@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Axe-Grid
+GenericName=Axe-Fx II Editor
+Comment=Edit presets on an Axe-Fx II
+Exec=axegrid
+Icon=axe-grid
+Terminal=false
+Categories=AudioVideo;Audio;Midi;
+Keywords=guitar;midi;sysex;preset;

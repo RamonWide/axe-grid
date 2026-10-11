@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea
+    url: https://github.com/RamonWide/axe-grid/discussions
+    about: Ask how to do something, or talk an idea through, in Discussions.
+  - name: Security problem
+    url: https://github.com/RamonWide/axe-grid/security/advisories/new
+    about: Please report vulnerabilities privately, not in a public issue.

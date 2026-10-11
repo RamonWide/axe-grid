@@ -1,0 +1,22 @@
+[package]
+name = "axegrid-ui-egui"
+description = "egui shell: a thin view that acts only through engine commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish.workspace = true
+
+[dependencies]
+axegrid-engine.workspace = true
+axegrid-model.workspace = true
+egui.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

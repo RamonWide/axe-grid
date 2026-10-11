@@ -9,6 +9,7 @@
 //! controls at the bottom. The look itself lives in [`theme`] and [`knob`].
 
 pub mod knob;
+mod library;
 pub mod theme;
 
 use std::collections::BTreeMap;
@@ -36,15 +37,21 @@ const GRID_SCALE: (f32, f32) = (0.6, 2.2);
 /// Radius of the cable handles on a tile's edges, at scale 1.
 const HANDLE: f32 = 8.0;
 /// Commands the shell asks about before running.
-const CONFIRMED: &[&str] = &["preset.store"];
+const CONFIRMED: &[&str] = &["preset.store", "preset.copy", "cab.import"];
+/// Frames drawn before the unit is looked for, so the window is up first.
+const FRAMES_BEFORE_SEARCH: u8 = 2;
 /// Width of one character of the small text in a control cell, roughly.
 const CHOICE_CHAR_WIDTH: f32 = 7.4;
 /// A fader's share of a cell's width.
 const FADER_WIDTH: f32 = 0.62;
+/// How many rows of knobs a row of faders is as tall as.
+const FADER_ROWS: f32 = 2.0;
 /// Width of a page's curve, in cells, and the frequencies and gain steps it shows.
 const GRAPH_UNITS: f32 = 4.0;
 const GRAPH_HZ: (f32, f32) = (20.0, 20_000.0);
 const GRAPH_STEP_DB: f32 = 6.0;
+/// Lines across a level curve, in decibels.
+const LEVEL_STEP_DB: f32 = 20.0;
 /// Space around the line that sets the output section apart.
 const MIXER_GAP: f32 = 18.0;
 /// Most of the window's height the block editor may take.
@@ -83,8 +90,9 @@ enum Rail {
 /// How much room a page of the block editor needs.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 struct PageShape {
-    param_rows: usize,
-    mixer_rows: usize,
+    /// Height of each section in rows of knobs; a row of faders is taller.
+    param_rows: f32,
+    mixer_rows: f32,
     /// Widest row of each section, in cells.
     param_units: f32,
     mixer_units: f32,
@@ -95,21 +103,22 @@ impl PageShape {
     fn of(page: &Value) -> Self {
         let mut shape = Self { graph: page["graph"].is_object(), ..Self::default() };
         for row in page["rows"].as_array().into_iter().flatten() {
-            let controls = row["controls"].as_array().into_iter().flatten();
-            let units: f32 = controls.map(|c| if c["kind"] == "slider" { FADER_WIDTH } else { 1.0 }).sum();
+            let controls = || row["controls"].as_array().into_iter().flatten();
+            let units: f32 = controls().map(|c| if c["kind"] == "slider" { FADER_WIDTH } else { 1.0 }).sum();
+            let height = if controls().any(|c| c["kind"] == "slider") { FADER_ROWS } else { 1.0 };
             if row["mixer"] == true {
-                shape.mixer_rows += 1;
+                shape.mixer_rows += height;
                 shape.mixer_units = shape.mixer_units.max(units);
             } else {
-                shape.param_rows += 1;
+                shape.param_rows += height;
                 shape.param_units = shape.param_units.max(units);
             }
         }
         shape
     }
 
-    fn rows(&self) -> usize {
-        self.param_rows.max(self.mixer_rows).max(if self.graph { 2 } else { 1 })
+    fn rows(&self) -> f32 {
+        self.param_rows.max(self.mixer_rows).max(if self.graph { 2.0 } else { 1.0 })
     }
 
     fn units(&self) -> f32 {
@@ -166,7 +175,11 @@ pub struct Shell {
     rename_needs_focus: bool,
     page: usize,
     page_block: Option<u16>,
-    confirm_save: bool,
+    /// A command that overwrites something, waiting for a yes.
+    confirm: Option<Action>,
+    /// Frames drawn so far, until the unit has been looked for.
+    frames: u8,
+    library: library::LibraryView,
     themed: bool,
     gesture: GridGesture,
     cpu_read_at: Option<Instant>,
@@ -263,6 +276,8 @@ impl Shell {
     fn housekeeping(&mut self, ctx: &egui::Context) {
         if !self.engine.is_connected() {
             self.gesture = GridGesture::default();
+            self.library.reset();
+            self.find_unit_once(ctx);
             return;
         }
         self.run_quietly("device.poll");
@@ -276,8 +291,42 @@ impl Shell {
             self.cpu_read_at = Some(Instant::now());
             self.run_quietly("device.cpu_load");
         }
+        if idle {
+            self.library_work();
+        }
         let tuning = self.engine.state().tuner_on;
-        ctx.request_repaint_after(Duration::from_millis(if tuning { 40 } else { 120 }));
+        let soon = if self.library.busy() {
+            5
+        } else if tuning {
+            40
+        } else {
+            120
+        };
+        ctx.request_repaint_after(Duration::from_millis(soon));
+    }
+
+    /// Looks for the unit once, shortly after the window first appears.
+    fn find_unit_once(&mut self, ctx: &egui::Context) {
+        if self.frames > FRAMES_BEFORE_SEARCH {
+            return;
+        }
+        self.frames += 1;
+        ctx.request_repaint();
+        if self.frames == FRAMES_BEFORE_SEARCH {
+            self.status = "Looking for your Axe-Fx…".into();
+        } else if self.frames > FRAMES_BEFORE_SEARCH {
+            self.find_unit();
+        }
+    }
+
+    /// Connects to the first unit that answers, USB before other MIDI ports.
+    fn find_unit(&mut self) {
+        match self.engine.run("device.connect_auto", &Value::Null) {
+            Ok(found) => self.status = format!("Connected on {}", found["port"].as_str().unwrap_or("a MIDI port")),
+            Err(_) => {
+                self.status = "No Axe-Fx found. Switch it on and press Find my Axe-Fx, or pick the ports.".into();
+            }
+        }
     }
 
     fn shortcuts(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -331,6 +380,12 @@ impl Shell {
                     }
                 });
         };
+        let find =
+            egui::Button::new(RichText::new("Find my Axe-Fx").color(theme::ON_ACCENT).strong()).fill(theme::ACCENT);
+        if ui.add(find).on_hover_text("Look on USB first, then on every MIDI port").clicked() {
+            actions.push(("device.connect_auto", Value::Null));
+        }
+        ui.separator();
         ui.label(RichText::new("MIDI IN").small().color(theme::TEXT_DIM));
         port(ui, "midi-in", &self.inputs, &mut self.input);
         ui.label(RichText::new("OUT").small().color(theme::TEXT_DIM));
@@ -339,8 +394,7 @@ impl Shell {
             actions.push(("device.list_ports", Value::Null));
         }
         let ready = !self.input.is_empty() && !self.output.is_empty();
-        let connect = egui::Button::new(RichText::new("Connect").color(theme::ON_ACCENT).strong()).fill(theme::ACCENT);
-        if ui.add_enabled(ready, connect).clicked() {
+        if ui.add_enabled(ready, egui::Button::new("Connect")).clicked() {
             actions.push(("device.connect", json!({ "input": self.input, "output": self.output })));
         }
         if ui.button("Simulator").on_hover_text("Try the editor without hardware").clicked() {
@@ -396,6 +450,15 @@ impl Shell {
             let save = egui::Button::new(RichText::new("Save").color(theme::ON_ACCENT).strong()).fill(theme::ACCENT);
             if ui.add(save).on_hover_text("Write the edit buffer to the device (asks first)").clicked() {
                 actions.push(("preset.store", Value::Null));
+            }
+            ui.separator();
+            let cabs = lit_button(ui, "Cabs", self.library.cabs_open, theme::ACCENT);
+            if cabs.on_hover_text("User cabs: list, export, import").clicked() {
+                self.library.cabs_open = !self.library.cabs_open;
+            }
+            let presets = lit_button(ui, "Presets", self.library.presets_open, theme::ACCENT);
+            if presets.on_hover_text("All presets: browse, copy, export, import, back up").clicked() {
+                self.library.presets_open = !self.library.presets_open;
             }
         });
     }
@@ -815,19 +878,26 @@ impl Shell {
     /// One control cell of the block editor.
     fn control(ui: &mut egui::Ui, block: u16, cell: Vec2, control: &ControlView, actions: &mut Vec<Action>) {
         let set = |value: u32| ("param.set", json!({ "block": block, "param": control.id, "value": value }));
+        // A knob or a fader is either moved to a raw value or given a typed one.
+        let changed = |change: knob::Change| match change {
+            knob::Change::Raw(value) => set(value),
+            knob::Change::Typed(value) => {
+                ("param.set_displayed", json!({ "block": block, "param": control.id, "value": value }))
+            }
+        };
         match control.kind.as_str() {
             "spacer" => {
                 ui.allocate_exact_size(cell, Sense::hover());
             }
             "knob" => {
-                if let Some(value) = knob::knob(ui, cell, &control.label, &control.text, control.raw, control.max) {
-                    actions.push(set(value));
+                if let Some(change) = knob::knob(ui, cell, &control.label, &control.text, control.raw, control.max) {
+                    actions.push(changed(change));
                 }
             }
             "slider" => {
-                let size = vec2(cell.x * FADER_WIDTH, cell.y);
-                if let Some(value) = knob::fader(ui, size, &control.label, &control.text, control.raw, control.max) {
-                    actions.push(set(value));
+                let size = vec2(cell.x * FADER_WIDTH, cell.y * FADER_ROWS);
+                if let Some(change) = knob::fader(ui, size, &control.label, &control.text, control.raw, control.max) {
+                    actions.push(changed(change));
                 }
             }
             "toggle" => {
@@ -911,15 +981,27 @@ impl Shell {
         }
     }
 
+    /// Draws the curve of a page, whichever kind it is.
+    fn graph(ui: &mut egui::Ui, size: Vec2, graph: &Value) {
+        match graph["kind"].as_str() {
+            Some("dynamics") => Self::level_graph(ui, size, graph),
+            Some("envelope") => Self::envelope_graph(ui, size, graph),
+            _ => Self::eq_graph(ui, size, graph),
+        }
+    }
+
+    /// The pairs of numbers under `key` of a graph.
+    fn pairs(graph: &Value, key: &str) -> Vec<(f32, f32)> {
+        let list = graph[key].as_array().map(Vec::as_slice).unwrap_or_default();
+        list.iter().filter_map(|p| Some((p[0].as_f64()? as f32, p[1].as_f64()? as f32))).collect()
+    }
+
     /// Draws an equaliser curve: gain against frequency on a logarithmic axis.
     fn eq_graph(ui: &mut egui::Ui, size: Vec2, graph: &Value) {
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         let plot = rect.shrink2(vec2(8.0, 10.0));
-        let pairs = |key: &str| -> Vec<(f32, f32)> {
-            let list = graph[key].as_array().map(Vec::as_slice).unwrap_or_default();
-            list.iter().filter_map(|p| Some((p[0].as_f64()? as f32, p[1].as_f64()? as f32))).collect()
-        };
-        let (points, bands) = (pairs("points"), pairs("bands"));
+        let (points, also, bands) =
+            (Self::pairs(graph, "points"), Self::pairs(graph, "also"), Self::pairs(graph, "bands"));
         // Scaled to the boosts and cuts dialled in; a filter's steep slope may run off the edge.
         let loudest = bands.iter().map(|p| p.1.abs()).fold(0.0_f32, f32::max);
         let span = ((loudest / GRAPH_STEP_DB).ceil() * GRAPH_STEP_DB).clamp(2.0 * GRAPH_STEP_DB, 4.0 * GRAPH_STEP_DB);
@@ -947,14 +1029,74 @@ impl Shell {
         }
         painter
             .line_segment([pos2(plot.left(), y(0.0)), pos2(plot.right(), y(0.0))], Stroke::new(1.0_f32, theme::EDGE));
-        let line: Vec<Pos2> = points.iter().map(|&(hz, db)| pos2(x(hz), y(db))).collect();
-        painter.add(egui::Shape::line(line, Stroke::new(2.0_f32, theme::ACCENT)));
+        // A second curve, where a block has two, sits behind the main one.
+        for (curve, ink) in [(also, theme::CABLE), (points, theme::ACCENT)] {
+            let line: Vec<Pos2> = curve.iter().map(|&(hz, db)| pos2(x(hz), y(db))).collect();
+            painter.add(egui::Shape::line(line, Stroke::new(2.0_f32, ink)));
+        }
         for (index, &(hz, db)) in bands.iter().enumerate() {
             let at = pos2(x(hz), y(db));
             painter.circle_filled(at, 7.0, theme::PANEL);
             painter.circle_stroke(at, 7.0, Stroke::new(1.5_f32, theme::ACCENT));
             painter.text(at, Align2::CENTER_CENTER, (index + 1).to_string(), small.clone(), theme::TEXT);
         }
+    }
+
+    /// Draws what a compressor or a gate does: level out against level in.
+    fn level_graph(ui: &mut egui::Ui, size: Vec2, graph: &Value) {
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        // Square, so that "unchanged" is the diagonal.
+        let side = (rect.width() - 16.0).min(rect.height() - 20.0).max(10.0);
+        let plot = Rect::from_center_size(rect.center(), Vec2::splat(side));
+        let floor = (graph["floor"].as_f64().unwrap_or(-80.0) as f32).min(-1.0);
+        let along = |db: f32| 1.0 - db.clamp(floor, 0.0) / floor;
+        let x = |db: f32| plot.left() + plot.width() * along(db);
+        let y = |db: f32| plot.bottom() - plot.height() * along(db);
+
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, theme::RADIUS, theme::BACKDROP);
+        let faint = Stroke::new(1.0_f32, theme::RAISED);
+        let small = FontId::proportional(9.0);
+        let mut db = floor;
+        while db <= 0.0 {
+            painter.line_segment([pos2(x(db), plot.top()), pos2(x(db), plot.bottom())], faint);
+            painter.line_segment([pos2(plot.left(), y(db)), pos2(plot.right(), y(db))], faint);
+            let label = format!("{db:.0}");
+            painter.text(pos2(x(db) + 2.0, plot.bottom()), Align2::LEFT_BOTTOM, label, small.clone(), theme::TEXT_DIM);
+            db += LEVEL_STEP_DB;
+        }
+        painter.line_segment([pos2(x(floor), y(floor)), pos2(x(0.0), y(0.0))], Stroke::new(1.0_f32, theme::EDGE));
+        let threshold = graph["threshold"].as_f64().map(|t| t as f32).filter(|t| (floor..=0.0).contains(t));
+        if let Some(threshold) = threshold {
+            let mark = Stroke::new(1.0_f32, theme::TEXT_DIM);
+            painter.line_segment([pos2(x(threshold), plot.top()), pos2(x(threshold), plot.bottom())], mark);
+        }
+        let line: Vec<Pos2> =
+            Self::pairs(graph, "points").iter().map(|&(input, output)| pos2(x(input), y(output))).collect();
+        painter.add(egui::Shape::line(line, Stroke::new(2.0_f32, theme::ACCENT)));
+        painter.text(plot.left_top() + vec2(3.0, 2.0), Align2::LEFT_TOP, "out / in dB", small, theme::TEXT_DIM);
+    }
+
+    /// Draws an envelope: level against time.
+    fn envelope_graph(ui: &mut egui::Ui, size: Vec2, graph: &Value) {
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        let plot = rect.shrink2(vec2(10.0, 14.0));
+        let length = (graph["length_ms"].as_f64().unwrap_or(1.0) as f32).max(1.0);
+        let at = |(ms, level): (f32, f32)| {
+            let across = plot.width() * (ms / length).clamp(0.0, 1.0);
+            pos2(plot.left() + across, plot.bottom() - plot.height() * level.clamp(0.0, 1.0))
+        };
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, theme::RADIUS, theme::BACKDROP);
+        painter.line_segment([plot.left_bottom(), plot.right_bottom()], Stroke::new(1.0_f32, theme::EDGE));
+        let corners: Vec<Pos2> = Self::pairs(graph, "points").into_iter().map(at).collect();
+        painter.add(egui::Shape::line(corners.clone(), Stroke::new(2.0_f32, theme::ACCENT)));
+        for corner in corners.iter().skip(1) {
+            painter.circle_filled(*corner, 3.0, theme::ACCENT);
+        }
+        let small = FontId::proportional(9.0);
+        let label = format!("{length:.0} ms");
+        painter.text(plot.right_bottom() + vec2(0.0, 2.0), Align2::RIGHT_TOP, label, small, theme::TEXT_DIM);
     }
 
     fn block_editor(&mut self, ui: &mut egui::Ui, block: u16, actions: &mut Vec<Action>) {
@@ -1026,7 +1168,7 @@ impl Shell {
         };
         let shape = PageShape::of(page);
         let available = ui.available_size();
-        let rows = shape.rows() as f32;
+        let rows = shape.rows();
         // Cells shrink before anything has to scroll.
         let cell = vec2(
             ((available.x - MIXER_GAP) / shape.units()).clamp(knob::MIN_CELL.x, knob::CELL.x),
@@ -1051,7 +1193,7 @@ impl Shell {
                 column(ui, false, actions);
                 if shape.graph {
                     ui.add_space(cell.x * 0.15);
-                    Self::eq_graph(ui, vec2(cell.x * GRAPH_UNITS, cell.y * rows), &page["graph"]);
+                    Self::graph(ui, vec2(cell.x * GRAPH_UNITS, cell.y * rows), &page["graph"]);
                 }
                 if shape.mixer_units > 0.0 {
                     // The output section sits against the right edge.
@@ -1076,8 +1218,9 @@ impl Shell {
     fn editor_height(&self, ctx: &egui::Context) -> f32 {
         let editor = self.engine.editor();
         let pages = editor["pages"].as_array().map(Vec::as_slice).unwrap_or_default();
-        let rows = pages.get(self.page.min(pages.len().saturating_sub(1))).map_or(1, |page| PageShape::of(page).rows());
-        let wanted = EDITOR_CHROME + rows as f32 * knob::CELL.y;
+        let page = pages.get(self.page.min(pages.len().saturating_sub(1)));
+        let rows = page.map_or(1.0, |page| PageShape::of(page).rows());
+        let wanted = EDITOR_CHROME + rows * knob::CELL.y;
         wanted.min(ctx.content_rect().height() * EDITOR_SHARE)
     }
 
@@ -1123,38 +1266,39 @@ impl Shell {
     }
 
     /// Asks before a command from [`CONFIRMED`] goes ahead.
-    fn save_dialog(&mut self, ctx: &egui::Context) {
-        let number = self.engine.state().preset.number;
+    fn confirm_dialog(&mut self, ctx: &egui::Context) {
+        let Some((id, params)) = self.confirm.clone() else { return };
+        let (title, body, go_ahead) = library::confirmation(id, &params, self.engine.state().preset.number);
         let mut decision = None;
-        egui::Window::new("Save preset")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(format!("Overwrite preset {number:03} on the device with what you hear now?"));
-                ui.label(
-                    RichText::new("The preset stored in that slot is replaced. This cannot be undone.")
-                        .color(theme::TEXT_DIM),
-                );
+        egui::Window::new(title).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
+            ctx,
+            |ui| {
+                let mut lines = body.lines();
+                ui.label(lines.next().unwrap_or_default());
+                for line in lines {
+                    ui.label(RichText::new(line).color(theme::TEXT_DIM));
+                }
+                ui.label(RichText::new("This cannot be undone.").color(theme::TEXT_DIM));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.button("Cancel").clicked() {
                         decision = Some(false);
                     }
-                    let save = egui::Button::new(RichText::new("Overwrite").color(Color32::WHITE).strong())
-                        .fill(theme::DANGER);
-                    if ui.add(save).clicked() {
+                    let go =
+                        egui::Button::new(RichText::new(go_ahead).color(Color32::WHITE).strong()).fill(theme::DANGER);
+                    if ui.add(go).clicked() {
                         decision = Some(true);
                     }
                 });
-            });
+            },
+        );
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             decision = Some(false);
         }
         if let Some(go) = decision {
-            self.confirm_save = false;
+            self.confirm = None;
             if go {
-                self.run("preset.store", &Value::Null);
+                self.run(id, &params);
             }
         }
     }
@@ -1168,7 +1312,7 @@ impl Shell {
         }
         self.housekeeping(ctx);
         let mut actions: Vec<Action> = Vec::new();
-        if !self.confirm_save {
+        if self.confirm.is_none() {
             self.shortcuts(ctx, &mut actions);
         }
         let bar = egui::Frame::new().fill(theme::BACKDROP).inner_margin(egui::Margin::symmetric(10, 4));
@@ -1192,7 +1336,8 @@ impl Shell {
                 self.gesture = self.grid(ui, &mut actions);
             } else {
                 ui.centered_and_justified(|ui| {
-                    let hint = "Choose the MIDI ports your unit is on and press Connect,\nor try the simulator.";
+                    let hint = "Press Find my Axe-Fx, or choose the MIDI ports your unit is on and press Connect.\n\
+                                You can also try the simulator.";
                     ui.label(RichText::new(hint).size(15.0).color(theme::TEXT_DIM));
                 });
             }
@@ -1200,16 +1345,24 @@ impl Shell {
         if self.engine.state().tuner_on {
             self.tuner_window(ctx, &mut actions);
         }
+        if self.engine.is_connected() {
+            if self.library.presets_open {
+                self.preset_manager(ctx, &mut actions);
+            }
+            if self.library.cabs_open {
+                self.cab_manager(ctx, &mut actions);
+            }
+        }
         for (id, params) in actions {
             if CONFIRMED.contains(&id) {
-                self.confirm_save = true;
+                self.confirm = Some((id, params));
+            } else if id == "device.connect_auto" {
+                self.find_unit();
             } else {
                 self.run(id, &params);
             }
         }
-        if self.confirm_save {
-            self.save_dialog(ctx);
-        }
+        self.confirm_dialog(ctx);
     }
 }
 
@@ -1264,12 +1417,16 @@ mod tests {
             { "mixer": true, "controls": [knob, knob] },
         ] });
         let shape = PageShape::of(&page);
-        assert_eq!((shape.param_rows, shape.mixer_rows, shape.graph), (2, 1, true));
+        // The row with a fader is as tall as two rows of knobs.
+        assert_eq!((shape.param_rows, shape.mixer_rows, shape.graph), (1.0 + FADER_ROWS, 1.0, true));
         assert_eq!((shape.param_units, shape.mixer_units), (3.0, 2.0));
-        assert_eq!(shape.rows(), 2);
+        assert_eq!(shape.rows(), 3.0);
         assert!((shape.units() - (3.0 + GRAPH_UNITS + 0.15 + 2.0)).abs() < 1e-6);
         // An empty page still takes one row and one cell.
-        assert_eq!((PageShape::of(&json!({})).rows(), PageShape::of(&json!({})).units()), (1, 1.0));
+        assert_eq!((PageShape::of(&json!({})).rows(), PageShape::of(&json!({})).units()), (1.0, 1.0));
+        // A page of faders alone gets their full height, and no more.
+        let faders = json!({ "rows": [{ "mixer": false, "controls": [{ "kind": "slider" }, { "kind": "slider" }] }] });
+        assert_eq!(PageShape::of(&faders).rows(), FADER_ROWS);
     }
 
     #[test]

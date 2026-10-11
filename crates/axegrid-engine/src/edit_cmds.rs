@@ -128,6 +128,17 @@ fn set(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     apply(engine, address, args.int("value", u64::from(RAW_MAX))? as u16)
 }
 
+/// Largest magnitude a typed value may have; the device limits it further.
+const DISPLAYED_LIMIT: f64 = 1.0e6;
+
+fn set_displayed(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
+    let address = address(engine, args)?;
+    let wanted = args.number("value", -DISPLAYED_LIMIT, DISPLAYED_LIMIT)? as f32;
+    let value = engine.session()?.set_param_displayed(address, wanted)?;
+    remember(engine, &value);
+    Ok(engine.param_json(&value))
+}
+
 fn set_normalized(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let address = address(engine, args)?;
     let position = args.number("position", 0.0, 1.0)?;
@@ -436,6 +447,17 @@ pub const COMMANDS: &[CommandSpec] = &[
         params: &[BLOCK, PARAM, req("value", "integer", "Raw value, 0 to 65534; for enumerations, the choice index")],
         enabled: connected,
         run: set,
+    },
+    CommandSpec {
+        id: "param.set_displayed",
+        label: "Set Parameter (Displayed Value)",
+        menu: "",
+        shortcut: "",
+        doc: "Set a continuous parameter to a value in the unit the device displays it in, such as -40 for \
+              \"-40.0 dB\" or 1200 for \"1200 Hz\". The device limits values outside the parameter's range.",
+        params: &[BLOCK, PARAM, req("value", "number", "The value as it should read on the device")],
+        enabled: connected,
+        run: set_displayed,
     },
     CommandSpec {
         id: "param.set_normalized",

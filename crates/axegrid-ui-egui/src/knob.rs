@@ -1,11 +1,12 @@
 //! The block editor's controls, painted from scratch: a rotary knob (an arc
 //! that fills with the value, a round cap and a pointer), a vertical fader
 //! and an on/off switch. Drag up or down, or turn the mouse wheel over a
-//! control, to change it; hold Shift for fine steps.
+//! control, to change it; hold Shift for fine steps. Double-click the value
+//! under a knob or a fader to type one.
 
 use std::f32::consts::PI;
 
-use egui::{pos2, vec2, Align, Align2, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2};
+use egui::{pos2, vec2, Align, Align2, FontId, Key, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2};
 
 use crate::theme;
 
@@ -16,6 +17,8 @@ pub const MIN_CELL: Vec2 = vec2(54.0, 80.0);
 /// Height kept for the label, enough for two lines.
 pub const LABEL_BAND: f32 = 26.0;
 const LABEL_FONT: f32 = 10.5;
+/// Height of the value under a control, which is also where one is typed.
+const VALUE_BAND: f32 = 18.0;
 const RADIUS: f32 = 23.0;
 const START_ANGLE: f32 = 0.75 * PI;
 const SWEEP: f32 = 1.5 * PI;
@@ -114,21 +117,78 @@ pub fn label(ui: &Ui, rect: Rect, text: &str, hot: bool) {
 }
 
 fn value_text(ui: &Ui, rect: Rect, text: &str) {
-    let at = pos2(rect.center().x, rect.bottom() - 9.0);
+    let at = pos2(rect.center().x, rect.bottom() - VALUE_BAND / 2.0);
     ui.painter().with_clip_rect(rect).text(at, Align2::CENTER_CENTER, text, FontId::monospace(11.0), theme::TEXT);
 }
 
-/// Draws a knob and returns the new raw value if the user turned it.
-pub fn knob(ui: &mut Ui, size: Vec2, name: &str, text: &str, raw: u32, max: u32) -> Option<u32> {
+/// What the user did to a continuous control this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Change {
+    /// Dragged or wheeled to this raw value.
+    Raw(u32),
+    /// Typed this value, in the unit the control displays.
+    Typed(f64),
+}
+
+/// The number a typed value stands for. A unit after it is ignored, and a
+/// decimal comma is read as a point.
+pub fn typed_number(text: &str) -> Option<f64> {
+    let text = text.trim().replace(',', ".");
+    let end = text.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))).unwrap_or(text.len());
+    text[..end].parse::<f64>().ok().filter(|number| number.is_finite())
+}
+
+/// The part of a display text worth starting an edit from: its number.
+fn editable(text: &str) -> String {
+    typed_number(text).map_or_else(String::new, |_| {
+        let end = text.find(|c: char| !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))).unwrap_or(text.len());
+        text[..end].to_owned()
+    })
+}
+
+/// The value under a control. A double-click turns it into a box to type
+/// in: Enter applies what was typed, Escape or a click elsewhere drops it.
+fn value_field(ui: &mut Ui, rect: Rect, text: &str) -> Option<f64> {
+    let band = Rect::from_min_max(pos2(rect.left() + 2.0, rect.bottom() - VALUE_BAND), rect.max - vec2(2.0, 0.0));
+    let id = ui.id().with(("value", rect.min.x.to_bits(), rect.min.y.to_bits()));
+    let editing: Option<String> = ui.data(|data| data.get_temp(id));
+    let Some(mut typed) = editing else {
+        value_text(ui, rect, text);
+        let spot = ui.interact(band, id, Sense::click());
+        if spot.on_hover_text("Double-click to type a value").double_clicked() {
+            ui.data_mut(|data| data.insert_temp(id, editable(text)));
+            ui.data_mut(|data| data.insert_temp(id.with("focus"), true));
+        }
+        return None;
+    };
+    let field = egui::TextEdit::singleline(&mut typed)
+        .font(FontId::monospace(11.0))
+        .horizontal_align(Align::Center)
+        .margin(egui::Margin::symmetric(2, 1));
+    let response = ui.put(band, field);
+    if ui.data_mut(|data| data.remove_temp::<bool>(id.with("focus"))).is_some() {
+        response.request_focus();
+    }
+    if response.lost_focus() {
+        ui.data_mut(|data| data.remove_temp::<String>(id));
+        let entered = ui.input(|input| input.key_pressed(Key::Enter));
+        return entered.then(|| typed_number(&typed)).flatten();
+    }
+    ui.data_mut(|data| data.insert_temp(id, typed));
+    None
+}
+
+/// Draws a knob and returns what the user did to it, if anything.
+pub fn knob(ui: &mut Ui, size: Vec2, name: &str, text: &str, raw: u32, max: u32) -> Option<Change> {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
-    let turned = adjusted(ui, &response, raw, max);
+    let turned = adjusted(ui, &response, raw, max).map(Change::Raw);
     if !ui.is_rect_visible(rect) {
         return turned;
     }
     let hot = response.hovered() || response.dragged();
     label(ui, rect, name, hot);
-    value_text(ui, rect, text);
+    let typed = value_field(ui, rect, text).map(Change::Typed);
 
     let painter = ui.painter().with_clip_rect(rect);
     // The dial takes what is left between the label and the value.
@@ -151,24 +211,42 @@ pub fn knob(ui: &mut Ui, size: Vec2, name: &str, text: &str, raw: u32, max: u32)
         Stroke::new(2.0_f32, theme::TEXT),
     );
     response.on_hover_text(format!("{name}: {text}"));
-    turned
+    typed.or(turned)
 }
 
-/// Draws a vertical fader and returns the new raw value if it was moved.
-pub fn fader(ui: &mut Ui, size: Vec2, name: &str, text: &str, raw: u32, max: u32) -> Option<u32> {
+/// Where a drag of `dy` points takes a fader whose track is `track` points
+/// long: the cap follows the pointer, ten times slower when `fine`.
+pub fn fader_dragged(raw: u32, max: u32, dy: f32, track: f32, fine: bool) -> u32 {
+    let travel = if fine { track * 10.0 } else { track }.max(1.0);
+    let moved = raw as f32 - dy * max as f32 / travel;
+    moved.round().clamp(0.0, max as f32) as u32
+}
+
+/// Draws a vertical fader and returns what the user did to it, if anything.
+/// The track fills whatever height the cell has.
+pub fn fader(ui: &mut Ui, size: Vec2, name: &str, text: &str, raw: u32, max: u32) -> Option<Change> {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
-    let moved = adjusted(ui, &response, raw, max);
+    let track = Rect::from_min_max(
+        pos2(rect.center().x - 2.0, rect.top() + LABEL_BAND + 4.0),
+        pos2(rect.center().x + 2.0, rect.bottom() - VALUE_BAND - 4.0),
+    );
+    let fine = ui.input(|input| input.modifiers.shift);
+    let mut next = raw.min(max);
+    if response.dragged() {
+        next = fader_dragged(next, max, response.drag_delta().y, track.height(), fine);
+    }
+    let notches = wheel(ui, &response);
+    if notches != 0 {
+        next = wheeled_value(next, max, notches, fine);
+    }
+    let moved = (next != raw).then_some(Change::Raw(next));
     if !ui.is_rect_visible(rect) {
         return moved;
     }
     let hot = response.hovered() || response.dragged();
     label(ui, rect, name, hot);
-    value_text(ui, rect, text);
-    let track = Rect::from_min_max(
-        pos2(rect.center().x - 2.0, rect.top() + LABEL_BAND + 4.0),
-        pos2(rect.center().x + 2.0, rect.bottom() - 22.0),
-    );
+    let typed = value_field(ui, rect, text).map(Change::Typed);
     let position = raw.min(max) as f32 / max.max(1) as f32;
     let y = track.bottom() - track.height() * position;
     let painter = ui.painter();
@@ -177,7 +255,7 @@ pub fn fader(ui: &mut Ui, size: Vec2, name: &str, text: &str, raw: u32, max: u32
     let cap = Rect::from_center_size(pos2(rect.center().x, y), vec2((rect.width() - 14.0).min(26.0), 9.0));
     painter.rect_filled(cap, 3.0_f32, if hot { theme::TEXT } else { theme::CABLE });
     response.on_hover_text(format!("{name}: {text}"));
-    moved
+    typed.or(moved)
 }
 
 /// Draws an on/off switch and returns the new state if it was flipped.
@@ -211,6 +289,30 @@ mod tests {
         assert_eq!(dragged_value(10, 65534, 500.0, false), 0);
         assert_eq!(dragged_value(65000, 65534, -500.0, false), 65534);
         assert_eq!(dragged_value(500, 65534, 0.0, false), 500);
+    }
+
+    #[test]
+    fn a_fader_cap_follows_the_pointer() {
+        // Dragging the length of the track covers the whole range, however long the track is.
+        assert_eq!(fader_dragged(0, 65534, -150.0, 150.0, false), 65534);
+        assert_eq!(fader_dragged(65534, 65534, 48.0, 48.0, false), 0);
+        assert_eq!(fader_dragged(32767, 65534, -15.0, 150.0, false), 32767 + 6553);
+        // Fine: a tenth of that. A track of no length does not divide by zero.
+        assert_eq!(fader_dragged(32767, 65534, -15.0, 150.0, true), 32767 + 655);
+        assert_eq!(fader_dragged(10, 100, -1.0, 0.0, false), 100);
+    }
+
+    #[test]
+    fn typed_values_are_read_as_numbers() {
+        assert_eq!(typed_number("-40"), Some(-40.0));
+        assert_eq!(typed_number(" 1200 Hz "), Some(1200.0));
+        assert_eq!(typed_number("3,5"), Some(3.5));
+        assert_eq!(typed_number("+2.5 dB"), Some(2.5));
+        assert_eq!(typed_number("loud"), None);
+        assert_eq!(typed_number(""), None);
+        // An edit starts from the number shown, without its unit.
+        assert_eq!(editable("-65.2 dB"), "-65.2");
+        assert_eq!(editable("OFF"), "");
     }
 
     #[test]

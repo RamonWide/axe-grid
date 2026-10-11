@@ -33,7 +33,8 @@ pub enum Kind {
 pub enum When {
     /// The parameter's raw value is one of these.
     Values { param: u16, values: Vec<u32> },
-    /// The parameter's display text is this, ignoring case and punctuation.
+    /// The parameter's display text starts with this, or with one of
+    /// these when it is a comma-separated list, ignoring case and punctuation.
     Text { param: u16, text: String },
 }
 
@@ -72,7 +73,8 @@ pub struct Page {
     pub since: Option<Firmware>,
     /// Shown only while the block's type text contains this.
     pub type_contains: Option<String>,
-    /// A curve drawn beside the controls: `"eq"`.
+    /// A curve drawn beside the controls, by kind: `"eq"`, `"speaker"`,
+    /// `"delay_eq"`, `"reverb_eq"`, `"filter"`, `"tone"`, `"adsr1"`, `"adsr2"`.
     pub graph: Option<String>,
 }
 
@@ -254,7 +256,12 @@ impl Control {
             Some(When::Values { param, values: wanted }) => {
                 values.get(param).is_none_or(|(raw, _)| wanted.contains(raw))
             }
-            Some(When::Text { param, text }) => values.get(param).is_none_or(|(_, have)| plain(have) == plain(text)),
+            // The text lists alternatives, each the start of a type name:
+            // "10 Band" stands for every ten-band type.
+            Some(When::Text { param, text }) => values.get(param).is_none_or(|(_, have)| {
+                let have = plain(have);
+                text.split(',').map(plain).any(|wanted| !wanted.is_empty() && have.starts_with(&wanted))
+            }),
         }
     }
 }
@@ -358,7 +365,12 @@ mod tests {
         assert_eq!(named, ["EQMATCH_CAPTUREREF", "EQMATCH_CAPTUREUSER"]);
 
         assert!(for_effect(4).unwrap().variants[0].pages.iter().all(|p| p.graph.as_deref() == Some("eq")));
-        assert!(for_effect(5).unwrap().variants[0].pages.iter().all(|p| p.graph.is_none()));
+        // The amp draws a curve on its speaker page only.
+        let amp: Vec<(&str, Option<&str>)> =
+            for_effect(5).unwrap().variants[0].pages.iter().map(|p| (p.name.as_str(), p.graph.as_deref())).collect();
+        assert!(amp.contains(&("Speaker", Some("speaker"))));
+        assert_eq!(amp.iter().filter(|(_, graph)| graph.is_some()).count(), 1);
+        assert_eq!(for_effect(18).unwrap().variants[0].pages[0].graph.as_deref(), Some("filter"));
     }
 
     #[test]
@@ -392,5 +404,11 @@ mod tests {
         let banded = Control { when: Some(When::Text { param: 15, text: "8 Band".into() }), since: None, ..control };
         assert!(banded.visible(None, &values(&[(15, 3, "8 BAND")])));
         assert!(!banded.visible(None, &values(&[(15, 0, "10 BAND")])));
+        // The device's type names say more than the condition does.
+        assert!(banded.visible(None, &values(&[(15, 5, "8 BAND VAR Q")])));
+        let listed =
+            Control { when: Some(When::Text { param: 0, text: "USA Lead,USA Rhythm, USA Pre LD2".into() }), ..banded };
+        assert!(listed.visible(None, &values(&[(0, 1, "USA RHYTHM")])));
+        assert!(!listed.visible(None, &values(&[(0, 1, "PLEXI 100W")])));
     }
 }

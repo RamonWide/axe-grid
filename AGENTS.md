@@ -39,9 +39,10 @@ crates/
 apps/
   axegrid             desktop app; optional `--control` server
   axegrid-cli         headless: commands | run | batch | serve | mcp
+  axegrid-setup       Windows installer: copies the programs, adds desktop and Start-menu shortcuts
 spec/                 functional specification (prose and tables only)
-scripts/              doc generation
-assets/icon/          the app icon (original artwork)
+scripts/              doc generation; render-icon.py turns the icon drawing into .png and .ico
+assets/icon/          the app icon (original artwork) and its rendered bitmaps
 packaging/            macOS bundle and Linux desktop-entry files used by the release workflow
 .github/              CI, the release workflow, issue and pull-request templates
 ```

@@ -6,7 +6,9 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use axegrid_model::Grid;
-use axegrid_sysex::{function, BlockState, Model, ParamAddress, ParamValue, Reply, Request};
+use axegrid_sysex::{
+    function, BlockState, Dump, DumpError, DumpKind, Frame, Model, ParamAddress, ParamValue, Reply, Request,
+};
 
 /// A bidirectional stream of complete SysEx messages.
 pub trait Transport: Send {
@@ -32,6 +34,8 @@ pub enum SessionError {
     UnexpectedReply {
         function: u8,
     },
+    /// A preset or cabinet arrived damaged or incomplete.
+    BadDump(DumpError),
 }
 
 impl fmt::Display for SessionError {
@@ -46,6 +50,7 @@ impl fmt::Display for SessionError {
             Self::UnexpectedReply { function } => {
                 write!(f, "reply to function {function:#04X} had an unexpected shape")
             }
+            Self::BadDump(e) => write!(f, "the device sent unusable data: {e}"),
         }
     }
 }
@@ -148,6 +153,11 @@ impl<T: Transport> Session<T> {
         self.transport.send(&request.to_frame(self.model.byte()).to_bytes())?;
         let mut deadline = Instant::now() + self.timeout;
         let mut items = Vec::new();
+        let dump = match request {
+            Request::PresetDump(_) => Some(DumpKind::Preset),
+            Request::CabDump(_) => Some(DumpKind::Cab),
+            _ => None,
+        };
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             let Some(bytes) = self.transport.receive(left)? else {
@@ -171,6 +181,10 @@ impl<T: Transport> Session<T> {
                     items.push(reply);
                 }
                 reply if request.is_answered_by(function_of(&reply)) => return Ok((items, reply)),
+                // Header and data messages of a dump; its footer ends it above.
+                Reply::Other(frame) if dump.is_some_and(|kind| kind.owns(frame.function)) => {
+                    items.push(Reply::Other(frame));
+                }
                 other => self.keep(other),
             }
         }
@@ -239,6 +253,12 @@ impl<T: Transport> Session<T> {
         self.param_reply(&Request::SetParam(address, raw))
     }
 
+    /// Sets a parameter to a value in the unit it is displayed in and
+    /// returns what the device applied; out-of-range values are limited by it.
+    pub fn set_param_displayed(&mut self, address: ParamAddress, value: f32) -> Result<ParamValue, SessionError> {
+        self.param_reply(&Request::SetParamDisplayed(address, value))
+    }
+
     fn param_reply(&mut self, request: &Request) -> Result<ParamValue, SessionError> {
         match self.request(request)? {
             Reply::Param(value) => Ok(value),
@@ -258,6 +278,61 @@ impl<T: Transport> Session<T> {
             .collect())
     }
 
+    /// Name of a stored preset, without loading it.
+    pub fn preset_name_at(&mut self, number: u16) -> Result<String, SessionError> {
+        match self.request(&Request::PresetNameAt(number))? {
+            Reply::PresetNameAt { name, .. } => Ok(name),
+            _ => Err(SessionError::UnexpectedReply { function: function::PRESET_NAME_AT }),
+        }
+    }
+
+    /// Name of a cabinet by its position in the device's cab list.
+    pub fn cab_name(&mut self, index: u16) -> Result<String, SessionError> {
+        match self.request(&Request::CabName(index))? {
+            Reply::CabName { name, .. } => Ok(name),
+            _ => Err(SessionError::UnexpectedReply { function: function::CAB_NAME }),
+        }
+    }
+
+    /// Reads a stored preset or a user cab as a checked dump.
+    pub fn read_dump(&mut self, request: &Request) -> Result<Dump, SessionError> {
+        let (items, footer) = self.exchange(request)?;
+        let frames = items.into_iter().chain([footer]).filter_map(|reply| match reply {
+            Reply::Other(frame) => Some(frame),
+            _ => None,
+        });
+        Dump::from_frames(frames).map_err(SessionError::BadDump)
+    }
+
+    /// Sends the messages of a dump, waiting for the device to accept each.
+    pub fn send_dump(&mut self, frames: &[Frame]) -> Result<(), SessionError> {
+        for frame in frames {
+            let function = frame.function;
+            self.transport.send(&frame.to_bytes())?;
+            let deadline = Instant::now() + self.timeout;
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let Some(bytes) = self.transport.receive(left)? else {
+                    return Err(SessionError::Timeout { function });
+                };
+                match Reply::parse(&bytes) {
+                    Ok((_, Reply::Status { function: f, code: 0 })) if f == function => break,
+                    Ok((_, Reply::Status { function: f, code })) if f == function => {
+                        return Err(SessionError::Rejected { function, code });
+                    }
+                    Ok((_, other)) => self.keep(other),
+                    Err(_) => {}
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Gives the transport back without telling the device anything.
+    pub fn into_transport(self) -> T {
+        self.transport
+    }
+
     /// Tells the device the editor is going away.
     pub fn disconnect(mut self) -> T {
         let _ = self.transport.send(&Request::Disconnect.to_frame(self.model.byte()).to_bytes());
@@ -272,6 +347,8 @@ fn function_of(reply: &Reply) -> u8 {
         Reply::FirmwareVersion { .. } => FIRMWARE_VERSION,
         Reply::PresetNumber(_) => PRESET_NUMBER,
         Reply::PresetName(_) => PRESET_NAME,
+        Reply::PresetNameAt { .. } => PRESET_NAME_AT,
+        Reply::CabName { .. } => CAB_NAME,
         Reply::Grid(_) => GRID,
         Reply::BlockStates(_) => BLOCK_STATES,
         Reply::Scene(_) => SCENE,

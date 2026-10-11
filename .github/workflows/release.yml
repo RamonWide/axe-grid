@@ -55,6 +55,10 @@ jobs:
         if: runner.os != 'macOS'
         run: cargo build --release --locked -p axegrid -p axegrid-cli
 
+      - name: Build the installer (Windows)
+        if: runner.os == 'Windows'
+        run: cargo build --release --locked -p axegrid-setup
+
       - name: Build (macOS, both architectures)
         if: runner.os == 'macOS'
         env:
@@ -70,7 +74,7 @@ jobs:
           PACKAGE: ${{ steps.version.outputs.package }}
         run: |
           mkdir -p "dist/$PACKAGE"
-          cp target/release/axegrid.exe target/release/axegrid-cli.exe "dist/$PACKAGE/"
+          cp target/release/axegrid.exe target/release/axegrid-cli.exe target/release/axegrid-setup.exe "dist/$PACKAGE/"
           cp LICENSE ATTRIBUTION.md "dist/$PACKAGE/"
           cp docs/install.md "dist/$PACKAGE/INSTALL.md"
           (cd dist && 7z a -tzip "$PACKAGE.zip" "$PACKAGE")

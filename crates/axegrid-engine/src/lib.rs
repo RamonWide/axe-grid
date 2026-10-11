@@ -6,14 +6,16 @@ pub mod command;
 mod device_cmds;
 mod edit_cmds;
 mod file_cmds;
+mod graphs;
+mod library_cmds;
 mod live_cmds;
 mod preset_cmds;
 
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use axegrid_device::{PresetView, Session, Transport};
 use axegrid_model::defs::RAW_MAX;
-use axegrid_model::eq::{self, Band, Shape};
 use axegrid_model::layouts::{self, Kind};
 use axegrid_model::{blocks, grid, params, Definitions};
 use axegrid_sysex::{Model, ParamValue};
@@ -46,6 +48,10 @@ pub struct State {
     /// What the looper is doing, one bit per transport button, once the
     /// device has been asked to report it.
     pub looper: Option<u8>,
+    /// Names of stored presets read so far, by slot.
+    pub preset_names: BTreeMap<u16, String>,
+    /// Names of user cabs read so far, by cab number counted from 1.
+    pub cab_names: BTreeMap<u16, String>,
 }
 
 /// What the device's tuner hears.
@@ -61,11 +67,6 @@ pub struct TunerReading {
 const NOTE_NAMES: [&str; 12] = ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"];
 /// Tuner reading that means "in tune".
 const TUNER_CENTER: i32 = 63;
-/// Points along the frequency axis of an equaliser curve.
-const CURVE_POINTS: usize = 96;
-/// Effect type of the parametric equaliser, and how many bands it has.
-const PARAMETRIC_EQ: u8 = 4;
-const EQ_BANDS: usize = 5;
 /// Controls per row when a block has no page layout.
 const PLAIN_ROW: usize = 10;
 
@@ -82,10 +83,17 @@ pub struct Engine {
 pub fn registry() -> &'static [&'static CommandSpec] {
     static ALL: OnceLock<Vec<&'static CommandSpec>> = OnceLock::new();
     ALL.get_or_init(|| {
-        [device_cmds::COMMANDS, live_cmds::COMMANDS, preset_cmds::COMMANDS, edit_cmds::COMMANDS, file_cmds::COMMANDS]
-            .into_iter()
-            .flatten()
-            .collect()
+        [
+            device_cmds::COMMANDS,
+            live_cmds::COMMANDS,
+            preset_cmds::COMMANDS,
+            library_cmds::COMMANDS,
+            edit_cmds::COMMANDS,
+            file_cmds::COMMANDS,
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
     })
 }
 
@@ -249,48 +257,6 @@ impl Engine {
         described
     }
 
-    /// The curve a page draws beside its controls.
-    fn graph_json(&self, kind: &str, effect: Option<u8>, values: &layouts::Values) -> Option<Value> {
-        if kind != "eq" || effect != Some(PARAMETRIC_EQ) {
-            return None;
-        }
-        let read = |name: String| values.get(&params::id(PARAMETRIC_EQ, &name)?);
-        let number = |name: String| read(name).and_then(|(_, text)| eq::leading_number(text));
-        let bands: Vec<Band> = (1..=EQ_BANDS)
-            .filter_map(|band| {
-                // The outer and the inner pairs choose their shape; the middle band is a peak.
-                let (chooser, low_side) = match band {
-                    1 => (Some("PEQ_LFTYPE"), true),
-                    2 => (Some("PEQ_LMTYPE"), true),
-                    4 => (Some("PEQ_HMTYPE"), false),
-                    5 => (Some("PEQ_HFTYPE"), false),
-                    _ => (None, true),
-                };
-                let chosen =
-                    chooser.and_then(|name| read(name.to_owned())).map_or("PEAKING", |(_, text)| text.as_str());
-                let shape = match (chosen.to_ascii_uppercase().as_str(), low_side) {
-                    ("BLOCKING", true) => Shape::HighPass,
-                    ("BLOCKING", false) => Shape::LowPass,
-                    (shelf, true) if shelf.starts_with("SHELVING") => Shape::LowShelf,
-                    (shelf, false) if shelf.starts_with("SHELVING") => Shape::HighShelf,
-                    _ => Shape::Peaking,
-                };
-                Some(Band {
-                    shape,
-                    hz: number(format!("PEQ_FREQ{band}"))?,
-                    q: number(format!("PEQ_Q{band}"))?,
-                    gain_db: number(format!("PEQ_GAIN{band}"))?,
-                })
-            })
-            .collect();
-        let points: Vec<Value> = eq::response(&bands, CURVE_POINTS)
-            .into_iter()
-            .map(|(hz, db)| json!([(hz * 10.0).round() / 10.0, (db * 100.0).round() / 100.0]))
-            .collect();
-        let marks: Vec<Value> = bands.iter().map(|band| json!([band.hz, band.gain_db])).collect();
-        Some(json!({ "kind": "eq", "points": points, "bands": marks }))
-    }
-
     /// The selected block's controls arranged in pages and rows.
     pub fn editor(&self) -> Value {
         let Some(block) = self.state.selected_block else { return Value::Null };
@@ -330,7 +296,7 @@ impl Engine {
                         .filter(|(_, controls)| controls.iter().any(|c| c["kind"] != "spacer"))
                         .map(|(mixer, controls)| json!({ "mixer": mixer, "controls": controls }))
                         .collect();
-                    let graph = page.graph.as_deref().and_then(|kind| self.graph_json(kind, effect, &values));
+                    let graph = effect.and_then(|effect| graphs::for_page(effect, page, &values));
                     json!({ "name": page.name, "rows": rows, "graph": graph })
                 })
                 .filter(|page| page["rows"].as_array().is_some_and(|rows| !rows.is_empty()))
@@ -398,6 +364,12 @@ impl Engine {
             "looper": self.looper_json(),
             "definitions_loaded": self.defs.is_some(),
             "preset": { "number": view.number, "name": view.name, "scene": view.scene + 1 },
+            "library": {
+                "preset_slots": s.model.map(axegrid_model::library::preset_count),
+                "preset_names_known": s.preset_names.len(),
+                "user_cab_slots": s.model.and_then(axegrid_model::library::cab_slots).map(|slots| slots.user),
+                "cab_names_known": s.cab_names.len(),
+            },
             "grid": cells,
             "blocks": states,
             "selected_block": s.selected_block,

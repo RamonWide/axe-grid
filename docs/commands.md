@@ -3,7 +3,7 @@
 Generated from the registry by `scripts/gen-command-docs.py`. Do not edit by hand;
 regenerate after adding or changing a command (see `CONTRIBUTING.md`).
 
-52 commands.
+62 commands.
 
 ## device
 
@@ -19,6 +19,10 @@ Open a pair of MIDI ports, find the Axe-Fx II on them and read its current prese
 |---|---|---|---|
 | `input` | string | yes | MIDI input port name, as listed by device.list_ports |
 | `output` | string | yes | MIDI output port name |
+
+### `device.connect_auto`
+
+Look for an Axe-Fx II and connect to the first one that answers: the unit's own USB port first,               then every other MIDI port that has both an input and an output. Menu: Device > Find My Axe-Fx.
 
 ### `device.connect_simulator`
 
@@ -147,6 +151,83 @@ Switch to the next scene, wrapping from 8 to 1. Menu: Preset > Next Scene. Short
 
 Switch to the previous scene, wrapping from 1 to 8. Menu: Preset > Previous Scene. Shortcut: Ctrl+Down.
 
+## preset
+
+### `preset.names`
+
+Read the names of stored presets without loading them. Only reads.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `first` | integer | no | First slot to read; defaults to the first one |
+| `count` | integer | no | How many slots to read; defaults to all that remain |
+
+### `preset.export`
+
+Save a stored preset as a .syx file. Exports what is stored in the slot, not unsaved edits.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `path` | string | yes | File to write |
+| `number` | integer | no | Zero-based preset slot; defaults to the current preset |
+
+### `preset.export_range`
+
+Save a run of stored presets into a folder, one .syx file each, named by slot and preset name.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `folder` | string | yes | Folder to write into; created if missing |
+| `first` | integer | no | First slot to read; defaults to the first one |
+| `count` | integer | no | How many slots to read; defaults to all that remain |
+| `skip_empty` | boolean | no | Leave out unnamed (empty) slots; default true |
+
+### `preset.import`
+
+Load a preset .syx file into the edit buffer, replacing unsaved edits. Nothing is stored until preset.store.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `path` | string | yes | Preset file to load |
+
+### `preset.copy`
+
+Copy a stored preset to another slot on the device, overwriting what is there, and select the copy. Unsaved edits are lost.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `from` | integer | yes | Zero-based slot to copy |
+| `to` | integer | yes | Zero-based slot to overwrite |
+
+## cab
+
+### `cab.names`
+
+Read the names of the user cabinet slots. Only reads. Models whose cabinet memory is not known are refused.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `first` | integer | no | First user cab to read, counted from 1; defaults to 1 |
+| `count` | integer | no | How many slots to read; defaults to all that remain |
+
+### `cab.export`
+
+Save a user cabinet (impulse response) as a .syx file.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `cab` | integer | yes | User cab number, counted from 1 |
+| `path` | string | yes | File to write |
+
+### `cab.import`
+
+Write a cabinet .syx file into a user cab slot on the device, overwriting what is there. The slot addressing is taken from the message layout and public documentation and has not been confirmed on hardware.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `cab` | integer | yes | User cab number to overwrite, counted from 1 |
+| `path` | string | yes | Cabinet file to send |
+
 ## block
 
 ### `block.select`
@@ -226,6 +307,16 @@ Set a parameter to a raw value and return what the device applied.
 | `block` | integer or string | no | Block ID or name such as "Amp 1"; defaults to the selected block |
 | `param` | integer or string | yes | Parameter ID or symbolic name such as "DISTORT_DRIVE" |
 | `value` | integer | yes | Raw value, 0 to 65534; for enumerations, the choice index |
+
+### `param.set_displayed`
+
+Set a continuous parameter to a value in the unit the device displays it in, such as -40 for "-40.0 dB" or 1200 for "1200 Hz". The device limits values outside the parameter's range.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Amp 1"; defaults to the selected block |
+| `param` | integer or string | yes | Parameter ID or symbolic name such as "DISTORT_DRIVE" |
+| `value` | number | yes | The value as it should read on the device |
 
 ### `param.set_normalized`
 
@@ -376,7 +467,7 @@ Parameter IDs and symbolic names of a block type.
 
 ### `sysex.inspect_file`
 
-Check a .syx file: message count, checksums, and whether it is a preset or a cabinet IR.
+Check a .syx file: message count, checksums, whether it is a preset or a cabinet IR, and the name stored in it.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|

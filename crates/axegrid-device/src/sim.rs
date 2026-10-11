@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use axegrid_model::{blocks, grid, layouts, params};
 use axegrid_sysex::codec::{put_uint, Reader};
-use axegrid_sysex::{function, Frame, Model};
+use axegrid_sysex::{function, Dump, DumpKind, Frame, Model};
 
 use crate::session::Transport;
 
@@ -22,9 +22,22 @@ const TUNER_BURST: usize = 3;
 /// Looper transport controllers, in the order of their status bits.
 const LOOPER_CONTROLLERS: [u8; 6] = [28, 29, 30, 31, 32, 120];
 
+/// Where the user cabs start in the cab list, and how many there are.
+const SIM_FACTORY_CABS: u16 = 189;
+const SIM_USER_CABS: u16 = 1024;
+/// Words of a simulated impulse response, and of a data message.
+const SIM_CAB_WORDS: usize = 64;
+const SIM_CHUNK_WORDS: usize = 32;
+/// First word of a preset dump, and where the grid starts in it.
+const SIM_PRESET_MARK: u32 = 0x801;
+const SIM_NAME_AT: usize = 2;
+const SIM_GRID_AT: usize = 34;
+/// Raw steps per unit of the value the simulator displays (0.00 to 10.00).
+const SIM_DISPLAY_SCALE: f32 = 6553.4;
 /// Row the factory chains of the simulated presets sit on.
 const CHAIN_ROW: usize = 1;
 
+#[derive(Clone)]
 struct Preset {
     name: String,
     /// `(block, routing)` per cell, column by column.
@@ -40,6 +53,23 @@ impl Preset {
             cells[column * grid::ROWS + CHAIN_ROW] = (block, 1 << CHAIN_ROW);
         }
         Self { name: name.into(), cells }
+    }
+
+    /// The preset as the words of a dump: a mark, the name one character
+    /// to a word, then block and routing of every cell.
+    fn words(&self) -> Vec<u32> {
+        let mut words = vec![SIM_PRESET_MARK, 0];
+        words.extend(self.name.bytes().map(u32::from).chain(std::iter::repeat(0)).take(SIM_GRID_AT - SIM_NAME_AT));
+        words.extend(self.cells.iter().flat_map(|&(block, routing)| [u32::from(block), u32::from(routing)]));
+        words
+    }
+
+    fn from_words(words: &[u32]) -> Option<Self> {
+        let name: Vec<u8> =
+            words.get(SIM_NAME_AT..SIM_GRID_AT)?.iter().map(|&w| w as u8).take_while(|&b| b != 0).collect();
+        let cells: Vec<(u16, u16)> =
+            words.get(SIM_GRID_AT..)?.as_chunks::<2>().0.iter().map(|pair| (pair[0] as u16, pair[1] as u16)).collect();
+        (cells.len() == grid::CELLS).then(|| Self { name: String::from_utf8_lossy(&name).into_owned(), cells })
     }
 
     /// Real blocks in grid order, without shunts.
@@ -58,11 +88,46 @@ pub struct SimDevice {
     bypassed: BTreeMap<(usize, u16), bool>,
     on_y: BTreeMap<(usize, u16), bool>,
     outbox: VecDeque<Vec<u8>>,
+    /// User cabs that hold something: name and data words.
+    cabs: BTreeMap<u16, Vec<u32>>,
+    /// An upload in progress: its messages so far, and the cab slot it names.
+    incoming: Vec<Frame>,
+    upload_slot: Option<u16>,
+    /// A preset upload replaced the edit buffer.
+    uploaded: bool,
+    /// Presets written with a store message, as `(slot, name)`.
+    pub stored: Vec<(u16, String)>,
     /// Looper transport state, one bit per button, and whether it is reported.
     looper: u8,
     looper_watched: bool,
     /// Number of messages received, for tests.
     pub received: usize,
+}
+
+/// The words of a simulated cab: its name four characters to a word, then
+/// a decaying ramp standing in for the impulse response.
+fn cab_words(name: &str, seed: u32) -> Vec<u32> {
+    let mut bytes: Vec<u8> = name.bytes().chain(std::iter::repeat(0)).take(32).collect();
+    bytes[31] = 0;
+    let mut words: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|chunk| u32::from_le_bytes(*chunk)).collect();
+    words.extend((0..SIM_CAB_WORDS as u32 - 8).map(|n| (seed << 20) / (n + 1)));
+    words
+}
+
+fn cab_name(words: &[u32]) -> String {
+    let bytes: Vec<u8> = words.iter().take(8).flat_map(|word| word.to_le_bytes()).take_while(|&b| b != 0).collect();
+    String::from_utf8_lossy(&bytes).trim_end().to_owned()
+}
+
+/// The user-cab number in a dump request or an upload header, as each model
+/// lays it out.
+fn cab_slot(model: Model, payload: &[u8]) -> Option<u16> {
+    let byte = |at: usize| payload.get(at).map(|&b| u16::from(b));
+    match model {
+        Model::AxeFx2 => byte(0),
+        Model::AxeFx2Xl => Some(byte(0)? << 7 | byte(1)?),
+        Model::AxeFx2XlPlus => Some(byte(1)? << 7 | byte(0)?),
+    }
 }
 
 impl Default for SimDevice {
@@ -86,6 +151,11 @@ impl SimDevice {
             bypassed: BTreeMap::new(),
             on_y: BTreeMap::new(),
             outbox: VecDeque::new(),
+            cabs: BTreeMap::from([(0, cab_words("Sim 4x12", 7))]),
+            incoming: Vec::new(),
+            upload_slot: None,
+            uploaded: false,
+            stored: Vec::new(),
             looper: 0,
             looper_watched: false,
             received: 0,
@@ -98,6 +168,64 @@ impl SimDevice {
 
     fn status(&mut self, function: u8, code: u8) {
         self.reply(function::STATUS, vec![function, code]);
+    }
+
+    /// Queues a dump of `words` as header, data messages and footer.
+    fn send_dump(&mut self, kind: DumpKind, header: Vec<u8>, words: &[u32]) {
+        let (first, data, last) = kind.functions();
+        let groups = if kind == DumpKind::Preset { 3 } else { 5 };
+        self.reply(first, header);
+        for chunk in words.chunks(SIM_CHUNK_WORDS) {
+            let mut payload = Vec::new();
+            put_uint(&mut payload, chunk.len() as u32, 2);
+            chunk.iter().for_each(|&word| put_uint(&mut payload, word, groups));
+            self.reply(data, payload);
+        }
+        let mut payload = Vec::new();
+        put_uint(&mut payload, words.iter().fold(0, |acc, word| acc ^ word), groups);
+        self.reply(last, payload);
+    }
+
+    /// Takes one message of an upload; the footer completes it.
+    fn receive_dump(&mut self, frame: Frame) {
+        let function = frame.function;
+        if let Some(kind) = DumpKind::of_header(function) {
+            self.incoming.clear();
+            if kind == DumpKind::Cab {
+                self.upload_slot = cab_slot(self.model, &frame.payload);
+            }
+        }
+        let last = DumpKind::Preset.functions().2 == function || DumpKind::Cab.functions().2 == function;
+        self.incoming.push(frame);
+        if !last {
+            return self.status(function, 0);
+        }
+        let Ok(dump) = Dump::from_frames(std::mem::take(&mut self.incoming)) else {
+            return self.status(function, STATUS_INVALID_BLOCK);
+        };
+        let words: Vec<u32> = dump.words().iter().map(|&word| word as u32).collect();
+        let slot = self.upload_slot.take().filter(|&slot| slot < SIM_USER_CABS);
+        match (dump.kind, Preset::from_words(&words), slot) {
+            (DumpKind::Preset, Some(preset), _) => {
+                // An upload lands in the edit buffer of the current preset.
+                self.presets[self.current] = preset;
+                self.uploaded = true;
+                self.status(function, 0);
+            }
+            (DumpKind::Cab, _, Some(slot)) => {
+                self.cabs.insert(slot, words);
+                self.status(function, 0);
+            }
+            _ => self.status(function, STATUS_INVALID_BLOCK),
+        }
+    }
+
+    /// Name of the cab at a position in the cab list.
+    fn cab_name(&self, index: u16) -> String {
+        match index.checked_sub(SIM_FACTORY_CABS) {
+            None => format!("Sim Factory {}", index + 1),
+            Some(slot) => self.cabs.get(&slot).map_or_else(|| "EMPTY".to_owned(), |words| cab_name(words)),
+        }
     }
 
     fn in_preset(&self, block: u16) -> bool {
@@ -124,7 +252,7 @@ impl SimDevice {
         put_uint(&mut payload, param.into(), 2);
         put_uint(&mut payload, raw.into(), 3);
         payload.extend_from_slice(&[0; 5]);
-        let text = format!("{:.2}", f32::from(raw) / 6553.4);
+        let text = format!("{:.2}", f32::from(raw) / SIM_DISPLAY_SCALE);
         payload.extend_from_slice(text.as_bytes());
         payload.push(0);
         payload
@@ -155,6 +283,46 @@ impl SimDevice {
                 axegrid_sysex::codec::put_fixed_text(&mut payload, &self.presets[self.current].name, 32);
                 self.reply(PRESET_NAME, payload);
             }
+            PRESET_NAME_AT | PRESET_DUMP => {
+                let (high, low) = (r.u8()?, r.u8()?);
+                let number = usize::from(high) << 7 | usize::from(low);
+                let Some(preset) = self.presets.get(number).cloned() else {
+                    self.status(frame.function, STATUS_INVALID_BLOCK);
+                    return Some(());
+                };
+                if frame.function == PRESET_DUMP {
+                    let words = preset.words();
+                    let mut header = vec![0x7F, 0x00];
+                    put_uint(&mut header, words.len() as u32, 2);
+                    self.send_dump(DumpKind::Preset, header, &words);
+                } else {
+                    let mut payload = vec![high, low];
+                    payload.extend_from_slice(preset.name.as_bytes());
+                    payload.push(0);
+                    self.reply(PRESET_NAME_AT, payload);
+                }
+            }
+            CAB_NAME => {
+                let index = r.u16(2)?;
+                let mut payload = Vec::new();
+                put_uint(&mut payload, index.into(), 2);
+                payload.extend_from_slice(self.cab_name(index).as_bytes());
+                payload.push(0);
+                self.reply(CAB_NAME, payload);
+            }
+            CAB_DUMP => {
+                let slot = cab_slot(self.model, &frame.payload).filter(|&slot| slot < SIM_USER_CABS);
+                let Some(slot) = slot else {
+                    self.status(CAB_DUMP, STATUS_INVALID_BLOCK);
+                    return Some(());
+                };
+                // An empty slot reads as erased memory.
+                let words = self.cabs.get(&slot).cloned().unwrap_or_else(|| vec![u32::MAX; SIM_CAB_WORDS]);
+                let mut header = vec![0x7F, 0x7F];
+                put_uint(&mut header, words.len() as u32, 2);
+                self.send_dump(DumpKind::Cab, header, &words);
+            }
+            function if DumpKind::Preset.owns(function) || DumpKind::Cab.owns(function) => self.receive_dump(frame),
             SET_PRESET_NAME => {
                 self.presets[self.current].name = r.padded_text();
                 self.status(SET_PRESET_NAME, 0);
@@ -231,7 +399,7 @@ impl SimDevice {
             }
             CPU_LOAD => self.reply(CPU_LOAD, vec![42]),
             MIDI_CHANNEL => self.reply(MIDI_CHANNEL, vec![0]),
-            PRESET_EDITED => self.reply(PRESET_EDITED, vec![u8::from(!self.values.is_empty())]),
+            PRESET_EDITED => self.reply(PRESET_EDITED, vec![u8::from(self.uploaded || !self.values.is_empty())]),
             PARAM => {
                 let (block, param, value, set) = (r.u16(2)?, r.u16(2)?, r.u16(3)?, r.u8()?);
                 if !self.in_preset(block) {
@@ -244,6 +412,18 @@ impl SimDevice {
                         self.bypassed.insert((self.current, block), value != 0);
                     }
                 }
+                let payload = self.param_payload(block, param);
+                self.reply(PARAM, payload);
+            }
+            PARAM_WIDE => {
+                let (block, param, shown) = (r.u16(2)?, r.u16(2)?, r.f32()?);
+                if !self.in_preset(block) {
+                    self.status(PARAM_WIDE, STATUS_INVALID_BLOCK);
+                    return Some(());
+                }
+                // The simulator shows every value as raw / 6553.4.
+                let raw = (shown * SIM_DISPLAY_SCALE).round().clamp(0.0, 65534.0) as u16;
+                self.values.insert((self.current, block, param), raw);
                 let payload = self.param_payload(block, param);
                 self.reply(PARAM, payload);
             }
@@ -276,7 +456,19 @@ impl SimDevice {
                 payload.push(u8::from(on_y));
                 self.reply(BLOCK_XY, payload);
             }
-            STORE_PRESET => self.status(STORE_PRESET, 0),
+            STORE_PRESET => {
+                let number = usize::from(r.u8()?) << 7 | usize::from(r.u8()?);
+                let edit = self.presets[self.current].clone();
+                self.stored.push((number as u16, edit.name.clone()));
+                // Slots past the end are created, so tests can store anywhere nearby.
+                if number < self.presets.len() {
+                    self.presets[number] = edit;
+                } else if number == self.presets.len() {
+                    self.presets.push(edit);
+                }
+                self.uploaded = false;
+                self.status(STORE_PRESET, 0);
+            }
             LOOPER_STATUS => {
                 self.looper_watched = r.u8()? != 0;
                 self.status(LOOPER_STATUS, 0);

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use axegrid_model::{blocks, params, Definitions};
-use axegrid_sysex::{split_messages, Frame};
+use axegrid_sysex::{split_messages, Dump, Frame};
 use serde_json::{json, Value};
 
 use crate::command::{always, opt, req, Args, CommandError, CommandSpec};
@@ -14,7 +14,7 @@ use crate::Engine;
 /// Refuse to slurp files that cannot be what the command expects.
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 
-fn read_file(path: &Path) -> Result<Vec<u8>, CommandError> {
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, CommandError> {
     let describe = |e: std::io::Error| CommandError::Io(format!("{}: {e}", path.display()));
     let size = std::fs::metadata(path).map_err(describe)?.len();
     if size > MAX_FILE_BYTES {
@@ -125,7 +125,12 @@ fn sysex_inspect(_: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError>
             json!({ "model": format!("{model:#04x}"), "function": format!("{function:#04x}"), "count": count })
         })
         .collect();
-    Ok(json!({ "bytes": data.len(), "messages": total, "invalid": bad, "kind": kind, "by_function": messages }))
+    // A complete dump also tells its name and whether its checksum holds.
+    let dump = Dump::parse(&data);
+    let name = dump.as_ref().ok().map(Dump::name);
+    let problem = dump.err().filter(|_| kind != "other").map(|e| e.to_string());
+    Ok(json!({ "bytes": data.len(), "messages": total, "invalid": bad, "kind": kind, "name": name,
+               "problem": problem, "by_function": messages }))
 }
 
 fn inspect(engine: &mut Engine, _: &Args<'_>) -> Result<Value, CommandError> {
@@ -194,7 +199,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Inspect SysEx File",
         menu: "",
         shortcut: "",
-        doc: "Check a .syx file: message count, checksums, and whether it is a preset or a cabinet IR.",
+        doc: "Check a .syx file: message count, checksums, whether it is a preset or a cabinet IR, and the name stored in it.",
         params: &[req("path", "string", "Path of the .syx file")],
         enabled: always,
         run: sysex_inspect,

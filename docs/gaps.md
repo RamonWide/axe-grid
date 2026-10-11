@@ -24,17 +24,31 @@ empty preset that was reloaded afterwards: `preset.select`, `preset.rename`,
 `off` (readings arrive; the unit stops sending when switched off), and
 `block.select` on the Input Gate and Output blocks.
 
+Library, checked on the same unit: the names of all 768 preset slots
+(`preset.names`) and of the 1024 user cabs (`cab.names`); `preset.export`
+(the file is byte for byte what the unit sent); `cab.export` (the samples
+match the vendor file the cab was loaded from); `preset.import` into the edit
+buffer of an empty preset, which was reloaded afterwards; and
+`device.connect_auto` over the unit's USB port; and `param.set_displayed` on the
+input gate (a level, a ratio and two times, and a value past the end of the range). The level, envelope and
+frequency curves were checked for sensible shapes against the texts the unit
+reports for each block type.
+
 Still unverified on hardware:
 
 | Item | Risk if wrong | Where |
 |---|---|---|
 | `1D` store preset | A slot is **overwritten** | `Request::StorePreset` |
+| `preset.copy` (select, then `1D` to another slot) | The target slot is **overwritten** | `library_cmds.rs` |
+| `cab.import` (`7A` with a slot number) | A user cab is **overwritten**; the slot addressing is from the message layout, never sent | `Dump::frames` |
+| Library on a Mark I/II or an XL+ | Wrong slot counts; cab numbers laid out differently | `library.rs`, `transfer.rs` |
 | Tuner note numbering (0 = A) and centre (63) | Wrong note name or needle | `Engine::tuner_json` |
 | Tuner and CC 15 when the owner remapped the tuner controller | Another function is triggered | `live_cmds.rs` |
 | `07` modifiers | Not implemented | `message.rs` |
 
-`hwtest` never builds a store request. Keep it that way: test `preset.store`
-only on a slot the owner of the unit has named as disposable.
+`hwtest` never builds a store request. Keep it that way: test `preset.store`,
+`preset.copy` and `cab.import` only on a slot the owner of the unit has named
+as disposable.
 
 USB: on current Windows 11 the vendor's 2014 kernel driver is refused
 (Device Manager code 52), so the unit exposes no USB MIDI port to any
@@ -75,21 +89,20 @@ Not implemented at all:
 
 1. **Modifiers**: attaching a controller (LFO, envelope, pedal, scene
    controller) to a parameter, the modifier dialog and its curve.
-2. **Preset management**: the preset browser with names of all slots,
-   import and export of preset, bank and bundle files, copy/swap between
-   slots, the block library and global blocks, snapshots.
-3. **Cabinet management**: user cab list, import/export and audition of
-   impulse responses, the scratchpad slots.
+2. **Bank and bundle files, swapping two presets, the block library and
+   global blocks, snapshots.** (The preset browser, copy, import, export and
+   backup are there; see "Partly there".)
+3. **Cabinet tools beyond the list**: converting `.wav` and `.ir` files,
+   the scratchpad slots, renaming or clearing a slot, mixing IRs.
 4. **Scene tools**: copy and paste a scene, swap scenes, scene names,
    scene revert, per-scene X/Y copy, "set all blocks to X/Y".
 5. **Block tools**: copy and paste a block or its X/Y state, reset a block
    to defaults, "edit block" recall, block undo.
 6. **Grid tools**: move or shift a whole row or column, insert/delete a
    column, clear the grid, feedback loops shown on the grid.
-7. **Curves**: only the Parametric EQ draws one, computed locally. The
-   delay, reverb, filter, amp speaker and tone-match graphs, and the
-   controllers' LFO/ADSR/sequencer displays, are absent; the device's own
-   graph data is not read.
+7. **Measured graphs**: the Tone Match spectrum, and the controllers' LFO
+   and sequencer displays. Every curve that is drawn is computed from the
+   settings; the device's own graph data is not read.
 8. **Meters**: no level or gain-reduction meters anywhere.
 9. **Global and I/O settings, MIDI mapping, firmware tools, preferences,
    display offset, "pause communication", keyboard-shortcut editor.**
@@ -97,10 +110,27 @@ Not implemented at all:
 
 Partly there:
 
+- **Preset management**: all names, load, copy to another slot, save to
+  another slot, export, import into the edit buffer, and a backup of every
+  preset as one file each. A preset cannot be exported with unsaved edits
+  (save first), and restoring a backup is one import and save per preset.
+- **Cabinet management**: the user-cab list, export, import and "use in the
+  cab block" for an XL or XL+. Import is unverified (above). On a Mark I/II
+  the window says that its cabinet memory is not known.
+- **Curves**: frequency curves for the Parametric and Graphic EQ, Filter,
+  the delay's and reverb's EQ pages, the amp's Speaker page, the cab's cuts
+  and the Crossover; level curves for the Compressor (Studio type), the
+  Gate/Expander, the input gate and the Multiband Compressor (its middle
+  band); the two ADSR envelopes. They are textbook shapes, so the amp's
+  speaker curve in particular is a sketch: its two resonance amounts are
+  drawn as decibels, which the unit does not promise.
+
 - **Tone Match**: its two buttons set the capture and match parameters;
   the capture workflow and the spectrum display are missing.
 - **Looper**: transport buttons and their state work; no position bar.
-- **Graphic EQ and other fader pages**: faders work; no curve.
+- **Graphic EQ and other fader pages**: the faders shown are the ones of
+  the chosen type (before, a type whose name said more than "10 Band" showed
+  none).
 - **Tuner**: needle and note come from public documentation of the message
   and have not been checked against a played string.
 - **Dragging blocks**: within a column cables follow the block; across
@@ -119,5 +149,8 @@ Partly there:
   `param.set` commands.
 - The control channel has no per-command capabilities or filesystem roots.
 - `axegrid-cli` reports a failed bridge connection with the usage exit code.
-- The `52` currently registered commands cover a fraction of the original's
+- Reading the names of all presets and cabs, and a backup, run a few
+  requests per frame from the window; from the CLI one call does all of it
+  and blocks until it is done.
+- The `62` currently registered commands cover a fraction of the original's
   surface; the original has roughly 56 distinct device messages.

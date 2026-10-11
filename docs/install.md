@@ -30,15 +30,22 @@ your unit with the tools you already trust.
 
 1. Open the [latest release](https://github.com/RamonWide/axe-grid/releases/latest) and download
    `axe-grid-<version>-windows-x64.zip`.
-2. Right-click the downloaded file and choose **Extract All…**, then pick a folder you will find
-   again, such as `Documents\Axe-Grid`.
-3. Open that folder and double-click **axegrid.exe**.
+2. Right-click the downloaded file and choose **Extract All…**. Any folder will do, such as
+   Downloads.
+3. Open the extracted folder and double-click **axegrid-setup.exe**. A small window lists what it
+   does and asks you to press Enter when it is finished.
 4. The first time, Windows shows a blue box saying **"Windows protected your PC"**. This appears
    because the app is not yet signed with a paid certificate. Click **More info**, then
-   **Run anyway**.
+   **Run anyway**. You may see it once more when you first start Axe-Grid itself.
+5. Start Axe-Grid from the new **Axe-Grid** shortcut on your desktop, or from the Start menu.
 
-There is nothing to install: the app is the one file. To have it in the Start menu, right-click
-`axegrid.exe` and choose **Pin to Start**.
+The installer copies the app into your own user account (`AppData\Local\Programs\Axe-Grid`), so
+it does not ask for an administrator password. It adds the two shortcuts and an entry under
+**Settings › Apps › Installed apps**, and nothing else: no drivers, no background services. After
+it has run you can delete the downloaded folder.
+
+Prefer not to install? Double-click **axegrid.exe** in the extracted folder instead; the app is
+that one file and runs from anywhere.
 
 ## macOS
 
@@ -103,10 +110,12 @@ Then:
 
 1. Close any other program that talks to the unit (other editors, librarians, a DAW with the port
    open). On Windows only one program can use a MIDI port at a time.
-2. Start Axe-Grid.
-3. At the top of the window, pick the unit's port under **MIDI IN** and under **OUT**. If the list
-   is empty, switch the unit on and press **Rescan**.
-4. Press **Connect**. The current preset appears on the grid within a second or two.
+2. Switch the unit on and start Axe-Grid. It looks for the unit by itself: first on the unit's own
+   USB port, then on every other MIDI port. When it finds it, the current preset appears on the
+   grid within a second or two and the status line at the bottom says which port it used.
+3. If the unit was off or busy, press **Find my Axe-Fx** to look again.
+4. To choose the port yourself, pick it under **MIDI IN** and under **OUT** and press
+   **Connect**. If the lists are empty, switch the unit on and press **Rescan**.
 
 ## First steps
 
@@ -115,7 +124,8 @@ Then:
 - **Scenes:** the buttons 1 to 8 under the preset name.
 - **Edit a block:** click it on the grid. Its pages appear below; the tabs switch pages.
 - **Change a value:** drag a knob up or down, or turn the mouse wheel over it. Hold **Shift** for
-  fine steps.
+  fine steps. To type a value, double-click the number under a knob or a fader, type the new
+  number and press Enter; Escape leaves it as it was.
 - **Bypass and X/Y:** the buttons beside the block's name.
 - **Add a block:** right-click an empty cell and choose from the list. Right-click a block to
   remove it.
@@ -125,6 +135,19 @@ Then:
   end of the grid, click a handle and then the **INPUT** or **OUTPUT** bar.
 - **Input gate and output mixer:** click the **INPUT** or **OUTPUT** bar.
 - **Tuner, tap tempo, BPM:** in the top bar.
+- **All your presets:** the **Presets** button opens a list of every slot with its name. Type in
+  **Find** to search. Double-click a preset to load it. With a preset picked you can **Export…**
+  it to a file, copy it to another slot, or store what you are hearing into that slot
+  (**Save current here**). **Import file…** loads a preset file for you to try: it is not stored
+  until you save it. **Back up all…** writes every preset into a folder you choose, one file each;
+  it only reads from the unit.
+- **User cabs** (XL and XL+): the **Cabs** button lists the 1024 user cab slots. Pick one to
+  **Export…** it to a file, to load a cab file into that slot (**Import file here…**), or to hear
+  it in the current preset (**Use in cab block**). Importing a cab is new and has not yet been
+  confirmed on a unit, so export the slot first if it holds something you care about.
+- **Curves:** equalisers, filters, the compressor, the gates and some other blocks draw a curve
+  beside their controls. It is worked out from the settings as a guide; it is not a measurement
+  of the sound.
 - **Save:** the **Save** button stores the preset in its slot on the unit, after asking you to
   confirm. Until you save, your changes live only in the unit's edit buffer, exactly as when you
   turn the knobs on its front panel; selecting another preset discards them.
@@ -137,14 +160,17 @@ Then:
   Without it, lists show the current value as the unit reports it, and you step through them with
   the mouse wheel. Reading the names from the unit itself is on the [roadmap](../ROADMAP.md).
 - **No undo yet.** To get back to the saved preset, select it again.
-- **Not everything is there.** Modifiers, preset and cab management and more are still missing;
-  see the [roadmap](../ROADMAP.md).
+- **Anything that overwrites asks first.** Saving a preset, copying one over another and importing
+  a cab each show which slot will be replaced before anything is sent.
+- **Not everything is there.** Modifiers, global settings and more are still missing; see the
+  [roadmap](../ROADMAP.md).
 - **Firmware.** Axe-Grid never touches the unit's firmware or its global settings.
 
 ## Troubleshooting
 
 | What you see | What to try |
 |---|---|
+| "No Axe-Fx found" when the app starts | Switch the unit on and press **Find my Axe-Fx**. Close other programs that use the unit. If it still is not found, pick the ports yourself. |
 | The port lists are empty | Switch the unit on, check the cable, press **Rescan**. With USB, check that your system shows the unit as a MIDI device at all. |
 | **Connect** gives "no answer" | Another program may hold the port: close it. With a MIDI interface, check that both cables are plugged in and not swapped. Make sure you picked the unit's port for both IN and OUT. |
 | It connects but the window stutters | The unit is slow to answer or a cable is loose. Disconnect, check the cables, connect again. |
@@ -159,9 +185,13 @@ your Axe-Fx II model, its firmware version, your operating system and how the un
 
 ## Updating and removing
 
-To update, download the newer release and replace the old files. To remove Axe-Grid, delete the
-folder (Windows, Linux) or drag the app to the Bin (macOS). It keeps no settings elsewhere on your
-computer and installs no drivers or background services.
+To update, download the newer release and install it the same way; on Windows, close Axe-Grid
+first and run the new **axegrid-setup.exe**, which replaces the old files.
+
+To remove Axe-Grid on Windows, open **Settings › Apps › Installed apps**, find **Axe-Grid** and
+choose **Uninstall**; that removes the app and both shortcuts. If you never ran the installer,
+delete the folder. On Linux delete the folder, and on macOS drag the app to the Bin. Axe-Grid
+keeps no settings elsewhere on your computer and installs no drivers or background services.
 
 ## Checking your download (optional)
 

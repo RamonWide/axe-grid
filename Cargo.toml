@@ -36,6 +36,10 @@ serde_json = "1"
 getrandom = "0.4"
 eframe = "0.36"
 egui = "0.36"
+# Native open and save dialogs.
+rfd = "0.17"
+# Embeds the icon in the Windows executables.
+winresource = "0.1"
 
 [workspace.lints.clippy]
 unwrap_used = "warn"

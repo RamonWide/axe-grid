@@ -80,6 +80,7 @@ for the rest].
 | `00` | — (model `7F`) | Who is there? | B |
 | `01` | effect 2×7 | Begin parameter dump for a block; answered by `32` … items … `33` | B (purpose P) |
 | `02` | effect 2×7, param 2×7, value 3×7, set 1 | Get (`set=0`) or set (`set=1`) a block parameter | B |
+| `03` | a 1, b 1 (preset number in two bytes) | Send a stored preset as a dump; answered by `77` … `78` … `79` | B layout, H meaning |
 | `05` | block 2×7, cell 1 | Place a block in a grid cell | B layout, P meaning |
 | `06` | a 1, b 1, c 1 | Connect/disconnect two grid cells | B layout, P meaning |
 | `07` | effect 2×7, param 2×7, selector 2×7, value 3×7, set 1 | Get/set a modifier field | B |
@@ -88,22 +89,25 @@ for the rest].
 | `0E` | — | Per-block state list | B |
 | `0F` | — | Preset name | B |
 | `11` | effect 2×7, xy 1, set 1 | Get/set a block's X/Y state | B layout, P meaning |
+| `12` | index 2×7 | Name of a cabinet by its position in the cab list | B layout, H meaning |
 | `13` | — | CPU load | B |
 | `14` | — | Current preset number | B |
+| `15` | a 1, b 1 (preset number in two bytes) | Name of a stored preset, without loading it | B layout, H meaning |
 | `16` | effect 2×7, param 2×7 | Parameter metadata | B |
 | `17` | — | MIDI channel; reply is one byte, zero-based | B layout, H meaning |
+| `19` | user-cab number, laid out per model (4.5) | Send a user cab as a dump; answered by `7A` … `7B` … `7C` | B layout, H meaning (XL) |
 | `1D` | a 1, b 1 | Store preset (number in two bytes) | B layout, P meaning |
 | `20` | — | Grid layout and routing | B |
 | `28` | effect 2×7, param 2×7 | Enum strings of a parameter | B |
 | `29` | scene 1 (`7F` = query) | Get/set scene | B layout, P meaning |
 | `2A` | — | Preset-edited flag | B layout, P meaning |
-| `2E` | effect 2×7, param 2×7, value 5×7 | Set parameter with full-width value; answered by `02` | B |
+| `2E` | effect 2×7, param 2×7, value 5×7 (an IEEE-754 single) | Set a parameter to a value in its displayed unit; answered by `02` | B layout, H meaning |
 | `3C` | a 1, b 1 | Select preset (number in two bytes) | B layout, P meaning |
 | `42` | — | Disconnect | B layout, P meaning |
 | `47` | — | Device capability words (five 2×7 values) | B layout, ? meaning |
 
-Also sent, layout known but purpose not yet determined [B, ?]: `03`, `12`,
-`15`, `18`, `19`, `1A`, `1B`, `1F`, `22`, `23`, `24`, `2B`, `2C`, `2F`, `30`,
+Also sent, layout known but purpose not yet determined [B, ?]: `18`, `1A`,
+`1B`, `1F`, `22`, `23`, `24`, `2B`, `2C`, `2F`, `30`,
 `35`, `36`, `37`, `38`, `39`, `3A`, `3B`, `3E`, `41`, `46`, `5B`.
 
 ### 4.2 Replies and unsolicited messages
@@ -117,8 +121,10 @@ Also sent, layout known but purpose not yet determined [B, ?]: `03`, `12`,
 | `0D` | note 1, string 1, cents 1 (no checksum) | Tuner | B layout, P meaning |
 | `0E` | N × (32-bit word as 5×7) (no checksum) | Per-block state, see 4.3 | B |
 | `10` | — (no checksum) | Tempo beat | B |
+| `12` | index 2×7, name (32 characters, NUL-terminated) | Cabinet name | B layout, H meaning |
 | `13` | value 1 | CPU load | B |
 | `14` | a 1, b 1 | Preset number; also sent unsolicited | B |
+| `15` | a 1, b 1, name (32 bytes) | Name of a stored preset | B layout, H meaning |
 | `16` | type 5×7, min, max, scale, step (each an IEEE-754 single as 5×7) | Parameter metadata | B |
 | `20` | 48 × (block 2×7, routing 2×7) | Grid, see 4.4 | B |
 | `21` | — | Front panel changed something | B |
@@ -152,6 +158,12 @@ scaled to 7 bits, and the last 2×7 field is the highest choice index of an
 enumeration (0 for continuous parameters). The `32` list header carries the
 item count. Raw values run linearly from 0 to 65534, but the 3×7 field is
 21 bits wide and a parameter the firmware does not define can read higher.
+
+[H] `2E` takes the number as the device displays it: -40.0 sets a level
+shown as "-40.0 dB", 100.0 a time shown as "100.0 ms", 3.0 a ratio shown as
+"3.00". A value outside the parameter's range is limited to the nearest end
+(a threshold sent as -200 read back as "OFF", raw 0). The reply is the `02`
+message with the raw value and text now in force.
 
 [B ev_4659e67f] Reply matching: a request for `2E` is satisfied by `02`; `3B`
 by `07`; `0E` by `29`; `2B` by `2C`; `01`/`12`/`2B` by a `32` … `33` bracket.
@@ -196,14 +208,77 @@ function-`29` message carrying the current scene.
 column (12 columns of 4 rows). Routing bits 0–3: the cell takes input from
 row 1–4 of the column to its left. Block ID 0 is empty; 200–235 are shunts.
 
-### 4.5 File transfer brackets
+### 4.5 Dumps: presets and cabinets
 
-[B] [F] Presets travel as `77` (header) + N × `78` (data) + `79` (checksum
-footer, 3 bytes). Data chunks carry a 2×7 count and that many 16-bit words as
-3×7 each: 64 words per chunk on the II, 1024 on the XL/XL+. Cabinet IRs use
-`7A`/`7B`/`7C` the same way, with a 5-byte footer; other brackets are
-`74`/`75`/`76`, `61`/`62`/`63` and `67`/`68`/`69` [?].
-[?] The layout of the words inside a preset is not yet mapped.
+[B] [F] [H] A preset travels as `77` (header) + N × `78` (data) + `79`
+(footer). A cabinet impulse response travels as `7A` + N × `7B` + `7C`. The
+same messages are what a `.syx` file holds, what the device sends when asked
+for a dump, and what is sent to the device to load one. Other brackets exist
+(`74`/`75`/`76`, `61`/`62`/`63`, `67`/`68`/`69`) [?].
+
+| | Preset | Cabinet |
+|---|---|---|
+| Header payload | a 1, b 1, word count 2×7 [H]; the binary also has a form with a 3×7 count [B, ?] | slot, word count 2×7 |
+| Data payload | count 2×7, then that many words | count 2×7, then that many words |
+| One word | 3×7 (up to 21 bits) | 5×7 (a 32-bit sample; the spare bits are not data) |
+| Footer payload | XOR of all words, 3×7 | XOR of all words, 5×7 |
+| Seen on an XL [H] | 4096 words, 64 per data message | 2048 words, 32 per data message |
+
+[H] The XOR in the footer was checked against a preset dump and a cabinet
+dump read from an XL, and [F] against a cabinet file made for an XL+. For a
+cabinet only the low 32 bits of each word and of the footer agree between a
+file and a device dump of the same cabinet; the top three bits differ.
+
+[H] **Preset header.** A dump the device sends carries `7F 00` in the two
+number bytes, whichever slot was asked for. A dump sent to the device with
+`7F 00` there is loaded into the edit buffer and nothing is stored: the
+preset-edited flag is raised, and selecting a preset discards it. To keep it,
+store it (`1D`). [?] Whether a header that names a slot writes that slot
+directly is not known and is not used.
+
+[H] **Receiving.** The device acknowledges every message of a dump it is
+sent with a `64` status carrying that message's function and code 0, within
+a few milliseconds; the footer's acknowledgement takes about 0.1 s.
+
+[H] **Asking for a preset.** `03` with a slot number sends what is stored in
+that slot; unsaved edits are not included. With `7F 00` as the number the
+device answered with an empty preset, so the edit buffer cannot be read this
+way. [H] Asking does not change the current preset or its edited flag.
+
+[H] **Preset words.** Word 0 was `0x801` in every dump seen. Words 2 to 33
+hold the name, one character per word, padded with zeros; an empty slot has
+all zeros there. [?] The rest of the layout is not mapped.
+
+[H] [F] **Cabinet words.** The first eight words hold the name, four
+characters per word with the first character in the low byte. An empty user
+slot reads as all bits set.
+
+**Cabinet slot numbers.** The user-cab number is counted from 0. Each model
+lays it out differently in `19` and in the `7A` header [B]:
+
+| Model | In `19` | In the `7A` header | Conf. |
+|---|---|---|---|
+| II (`03`) | 1 byte | 1 byte, then the count | B layout |
+| XL (`06`) | 2 bytes, high 7 bits first | the same 2 bytes, then the count | B layout; H for `19` |
+| XL+ (`07`) | 2×7, low group first | the same 2×7, then the count | B layout; F for the header |
+
+[H] A dump the XL sends carries `7F 7F` in the slot bytes, as [F] cabinet
+files do. [P] Sending a cabinet with a slot number in the header writes that
+user slot; **this has not been done on hardware.** [H] `19` with a number
+that is not a user slot is refused with status code 22.
+
+### 4.6 What a unit stores
+
+[H] `15` answers for preset numbers 0 to 767 on an XL; an empty slot is named
+`<EMPTY>` and the bytes after the terminating NUL are leftovers. [P] The
+Mark I/II has 384 preset slots and the XL+ 768.
+
+[H] On an XL the cab list that `12` indexes runs: 0 to 188 factory cabs,
+189 to 1212 the 1024 user cabs (an unused one is named `EMPTY`), 1213 to
+1216 four more entries with blank names [?]. This matches the largest value
+of the cab block's cab parameter in the definition cache (1216) [F]. [P] The
+XL+ has the same cabinet memory. [?] The number of factory cabs on a Mark
+I/II is not known here, so its user cabs cannot be located in the list.
 
 ## 5. Identifiers
 
@@ -241,5 +316,6 @@ the prompt toggles.
 
 ## 8. Not covered
 
-Preset word layout, block library files, Axe-Change, firmware update, IR
-capture/conversion, Tone Match, the looper/sequencer UIs, auto-update.
+Most of the preset word layout, bank and bundle files, block library files,
+Axe-Change, firmware update, IR capture/conversion, Tone Match, the
+looper/sequencer UIs, auto-update.

@@ -2,12 +2,14 @@
 
 use crate::codec::{put_fixed_text, put_uint, Reader};
 use crate::frame::{Frame, FrameError};
+use crate::transfer::DumpKind;
 
 /// Function IDs (spec section 4).
 pub mod function {
     pub const PROBE: u8 = 0x00;
     pub const PARAM_DUMP: u8 = 0x01;
     pub const PARAM: u8 = 0x02;
+    pub const PRESET_DUMP: u8 = 0x03;
     pub const PLACE_BLOCK: u8 = 0x05;
     pub const CONNECT: u8 = 0x06;
     pub const MODIFIER: u8 = 0x07;
@@ -18,10 +20,13 @@ pub mod function {
     pub const PRESET_NAME: u8 = 0x0F;
     pub const TEMPO_BEAT: u8 = 0x10;
     pub const BLOCK_XY: u8 = 0x11;
+    pub const CAB_NAME: u8 = 0x12;
     pub const CPU_LOAD: u8 = 0x13;
     pub const PRESET_NUMBER: u8 = 0x14;
+    pub const PRESET_NAME_AT: u8 = 0x15;
     pub const PARAM_INFO: u8 = 0x16;
     pub const MIDI_CHANNEL: u8 = 0x17;
+    pub const CAB_DUMP: u8 = 0x19;
     pub const STORE_PRESET: u8 = 0x1D;
     pub const GRID: u8 = 0x20;
     pub const FRONT_PANEL_CHANGE: u8 = 0x21;
@@ -97,6 +102,15 @@ pub enum Request {
     FirmwareVersion,
     PresetNumber,
     PresetName,
+    /// Name of a stored preset, without loading it.
+    PresetNameAt(u16),
+    /// Asks for a stored preset as a dump (header, data, footer).
+    PresetDump(u16),
+    /// Name of a cabinet by its position in the cab list: factory cabs
+    /// first, then user cabs.
+    CabName(u16),
+    /// Asks for a user cab (zero-based) as a dump.
+    CabDump(u16),
     SetPresetName(String),
     SelectPreset(u16),
     StorePreset(u16),
@@ -112,6 +126,9 @@ pub enum Request {
     LooperStatus(bool),
     GetParam(ParamAddress),
     SetParam(ParamAddress, u16),
+    /// Sets a parameter to a value in the unit it is displayed in, such as
+    /// decibels or hertz. Answered like [`Request::SetParam`].
+    SetParamDisplayed(ParamAddress, f32),
     ParamInfo(ParamAddress),
     ParamStrings(ParamAddress),
     /// `None` queries the block's X/Y state.
@@ -140,6 +157,10 @@ impl Request {
             Self::FirmwareVersion => FIRMWARE_VERSION,
             Self::PresetNumber => PRESET_NUMBER,
             Self::PresetName => PRESET_NAME,
+            Self::PresetNameAt(_) => PRESET_NAME_AT,
+            Self::PresetDump(_) => PRESET_DUMP,
+            Self::CabName(_) => CAB_NAME,
+            Self::CabDump(_) => CAB_DUMP,
             Self::SetPresetName(_) => SET_PRESET_NAME,
             Self::SelectPreset(_) => SELECT_PRESET,
             Self::StorePreset(_) => STORE_PRESET,
@@ -151,6 +172,7 @@ impl Request {
             Self::MidiChannel => MIDI_CHANNEL,
             Self::LooperStatus(_) => LOOPER_STATUS,
             Self::GetParam(_) | Self::SetParam(..) => PARAM,
+            Self::SetParamDisplayed(..) => PARAM_WIDE,
             Self::ParamInfo(_) => PARAM_INFO,
             Self::ParamStrings(_) => PARAM_STRINGS,
             Self::BlockXy(..) => BLOCK_XY,
@@ -181,7 +203,15 @@ impl Request {
             | Self::MidiChannel
             | Self::Disconnect => {}
             Self::SetPresetName(name) => put_fixed_text(&mut payload, name, PRESET_NAME_LEN),
-            Self::SelectPreset(number) | Self::StorePreset(number) => {
+            Self::CabName(index) => put_uint(&mut payload, (*index).into(), 2),
+            Self::CabDump(cab) => {
+                let target = Model::from_byte(model).unwrap_or(Model::AxeFx2Xl);
+                payload = crate::transfer::cab_number(target, *cab);
+            }
+            Self::SelectPreset(number)
+            | Self::StorePreset(number)
+            | Self::PresetNameAt(number)
+            | Self::PresetDump(number) => {
                 // Unlike other fields, preset numbers go high group first.
                 payload.push(((number >> 7) & 0x7F) as u8);
                 payload.push((number & 0x7F) as u8);
@@ -197,6 +227,10 @@ impl Request {
                 address(&mut payload, a);
                 put_uint(&mut payload, (*value).into(), 3);
                 payload.push(1);
+            }
+            Self::SetParamDisplayed(a, value) => {
+                address(&mut payload, a);
+                crate::codec::put_f32(&mut payload, *value);
             }
             Self::ParamInfo(a) | Self::ParamStrings(a) => address(&mut payload, a),
             Self::BlockXy(block, state) => {
@@ -224,6 +258,9 @@ impl Request {
         match self.function() {
             PROBE => reply == STATUS,
             PARAM_DUMP => reply == LIST_END,
+            PARAM_WIDE => reply == PARAM,
+            PRESET_DUMP => reply == DumpKind::Preset.functions().2,
+            CAB_DUMP => reply == DumpKind::Cab.functions().2,
             own => reply == own,
         }
     }
@@ -291,6 +328,14 @@ pub enum Reply {
     },
     PresetNumber(u16),
     PresetName(String),
+    PresetNameAt {
+        number: u16,
+        name: String,
+    },
+    CabName {
+        index: u16,
+        name: String,
+    },
     Grid(Vec<GridCell>),
     BlockStates(Vec<BlockState>),
     Scene(u8),
@@ -377,6 +422,12 @@ impl Reply {
                 Self::PresetNumber(high << 7 | u16::from(r.u8()?))
             }
             PRESET_NAME => Self::PresetName(r.padded_text()),
+            PRESET_NAME_AT => {
+                let high = u16::from(r.u8()?);
+                // The name ends at its first NUL; what follows is not part of it.
+                Self::PresetNameAt { number: high << 7 | u16::from(r.u8()?), name: r.text().trim_end().to_owned() }
+            }
+            CAB_NAME => Self::CabName { index: r.u16(2)?, name: r.text().trim_end().to_owned() },
             GRID => {
                 let mut cells = Vec::with_capacity(r.remaining() / 4);
                 while r.remaining() >= 4 {
@@ -602,8 +653,35 @@ mod tests {
         assert_eq!(Reply::parse(&tuner).unwrap().1, Reply::Tuner { note: 0, string: 5, cents: 14 });
     }
 
+    /// Captured from an Axe-Fx II XL.
+    #[test]
+    fn library_messages_from_hardware() {
+        let bytes = |request: Request| request.to_frame(0x06).to_bytes();
+        assert_eq!(bytes(Request::PresetNameAt(500)), [0xF0, 0x00, 0x01, 0x74, 0x06, 0x15, 0x03, 0x74, 0x61, 0xF7]);
+        assert_eq!(bytes(Request::PresetDump(500)), [0xF0, 0x00, 0x01, 0x74, 0x06, 0x03, 0x03, 0x74, 0x77, 0xF7]);
+        assert_eq!(bytes(Request::CabName(0)), [0xF0, 0x00, 0x01, 0x74, 0x06, 0x12, 0x00, 0x00, 0x11, 0xF7]);
+        assert_eq!(bytes(Request::CabDump(3)), [0xF0, 0x00, 0x01, 0x74, 0x06, 0x19, 0x00, 0x03, 0x19, 0xF7]);
+        // The other models lay the cab number out differently.
+        assert_eq!(Request::CabDump(300).to_frame(0x07).payload, [0x2C, 0x02]);
+        assert_eq!(Request::CabDump(5).to_frame(0x03).payload, [5]);
+
+        // An empty slot: the name ends at the NUL and the rest is leftovers.
+        let mut payload = vec![0x03, 0x74];
+        payload.extend_from_slice(b"<EMPTY>");
+        payload.extend_from_slice(&[0, 0x7D, 0, 0x02, 0, 0, 0x7F, 0x7F, 0x56, 0x45, 0x52, 0x01]);
+        let reply = Frame::new(0x06, function::PRESET_NAME_AT, payload).to_bytes();
+        assert_eq!(Reply::parse(&reply).unwrap().1, Reply::PresetNameAt { number: 500, name: "<EMPTY>".into() });
+        let mut payload = vec![0x40, 0x01];
+        payload.extend_from_slice(b"Magic 160                      ");
+        payload.push(0);
+        let reply = Frame::new(0x06, function::CAB_NAME, payload).to_bytes();
+        assert_eq!(Reply::parse(&reply).unwrap().1, Reply::CabName { index: 192, name: "Magic 160".into() });
+    }
+
     #[test]
     fn reply_matching() {
+        assert!(Request::PresetDump(0).is_answered_by(0x79));
+        assert!(Request::CabDump(0).is_answered_by(0x7C));
         assert!(Request::Probe.is_answered_by(function::STATUS));
         assert!(Request::Grid.is_answered_by(function::GRID));
         assert!(Request::ParamDump { block: AMP1 }.is_answered_by(function::LIST_END));

@@ -21,6 +21,43 @@ fn connect(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> 
     Ok(engine.inspect())
 }
 
+/// What the unit's own USB MIDI port is called, in upper case.
+const USB_PORT_MARK: &str = "AXE-FX";
+
+/// Port pairs worth probing, the unit's USB port first: every name that is
+/// both an input and an output.
+fn candidate_ports(inputs: &[String], outputs: &[String]) -> Vec<String> {
+    let mut both: Vec<String> = inputs.iter().filter(|name| outputs.contains(name)).cloned().collect();
+    both.dedup();
+    // A stable sort keeps the system's order within each group.
+    both.sort_by_key(|name| !name.to_ascii_uppercase().contains(USB_PORT_MARK));
+    both
+}
+
+fn connect_auto(engine: &mut Engine, _: &Args<'_>) -> Result<Value, CommandError> {
+    let (inputs, outputs) = axegrid_device::midi::port_names().map_err(|e| CommandError::Io(e.to_string()))?;
+    let candidates = candidate_ports(&inputs, &outputs);
+    let mut tried = Vec::new();
+    for port in &candidates {
+        let opened = axegrid_device::midi::MidiTransport::open(port, port);
+        let session = opened.map_err(|e| e.to_string()).and_then(|transport| {
+            let boxed: Box<dyn Transport> = Box::new(transport);
+            Session::connect(boxed).map_err(|e| e.to_string())
+        });
+        match session {
+            Ok(session) => {
+                engine.attach(session, false)?;
+                let mut state = engine.inspect();
+                state["port"] = json!(port);
+                return Ok(state);
+            }
+            Err(reason) => tried.push(format!("{port}: {reason}")),
+        }
+    }
+    let detail = if tried.is_empty() { "this computer has no MIDI port pairs".to_owned() } else { tried.join("; ") };
+    Err(CommandError::NotFound(format!("no Axe-Fx II answered ({detail})")))
+}
+
 fn connect_simulator(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let model = match args.opt_str("model")? {
         None | Some("XL") => Model::AxeFx2Xl,
@@ -87,6 +124,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: connect,
     },
     CommandSpec {
+        id: "device.connect_auto",
+        label: "Find My Axe-Fx",
+        menu: "Device/Find My Axe-Fx",
+        shortcut: "",
+        doc: "Look for an Axe-Fx II and connect to the first one that answers: the unit's own USB port first,               then every other MIDI port that has both an input and an output.",
+        params: &[],
+        enabled: disconnected,
+        run: connect_auto,
+    },
+    CommandSpec {
         id: "device.connect_simulator",
         label: "Connect to Simulator",
         menu: "Device/Connect to Simulator",
@@ -127,3 +174,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: cpu_load,
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_usb_port_is_tried_first() {
+        let names = |list: &[&str]| list.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>();
+        let inputs = names(&["UCX II Midi Port 1", "AXE-FX II Audio Intfc", "Keyboard"]);
+        let outputs = names(&["Microsoft GS Wavetable Synth", "UCX II Midi Port 1", "AXE-FX II Audio Intfc"]);
+        // Ports without both directions cannot hold a conversation.
+        assert_eq!(candidate_ports(&inputs, &outputs), ["AXE-FX II Audio Intfc", "UCX II Midi Port 1"]);
+        assert!(candidate_ports(&[], &outputs).is_empty());
+    }
+}

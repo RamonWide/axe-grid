@@ -8,7 +8,7 @@ reviews the result.
 
 | File | Built on | Contents |
 |---|---|---|
-| `axe-grid-<ver>-windows-x64.zip` | `windows-latest` | `axegrid.exe`, `axegrid-cli.exe`, licence, attribution, install guide |
+| `axe-grid-<ver>-windows-x64.zip` | `windows-latest` | `axegrid.exe`, `axegrid-cli.exe`, `axegrid-setup.exe` (the installer: copies the programs into the user's account and adds desktop and Start-menu shortcuts), licence, attribution, install guide |
 | `axe-grid-<ver>-macos-universal.zip` | `macos-latest` | `Axe-Grid.app` (arm64 + x86_64, ad-hoc signed), `axegrid-cli`, licence, attribution, install guide |
 | `axe-grid-<ver>-linux-x86_64.tar.gz` | `ubuntu-22.04` | `axegrid`, `axegrid-cli`, desktop entry, icon, `install-desktop-entry.sh`, licence, attribution, install guide |
 | `axe-grid-<ver>-linux-aarch64.tar.gz` | `ubuntu-22.04-arm` | the same, for 64-bit ARM |

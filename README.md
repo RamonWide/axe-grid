@@ -39,7 +39,7 @@
 
 > [!IMPORTANT]
 > **Status: early alpha.** Axe-Grid edits presets on real hardware today, but it is not yet a
-> replacement for the original editor: there are no modifiers, no preset or cab management and no
+> replacement for the original editor: there are no modifiers, no global settings and no
 > undo. It has been tested on one Axe-Fx II XL (firmware 32.00) on Windows; the macOS and Linux
 > builds compile from the same code but nobody has run them against a unit yet.
 > [ROADMAP.md](ROADMAP.md) says exactly where things stand. Back up your presets before pointing
@@ -55,7 +55,7 @@
     </td>
     <td width="25%" valign="top">
       <h3>⚡ Small and native</h3>
-      One executable of a few megabytes. No installer, no runtime, no web view. Starts in a moment and stays out of the way.
+      One executable of a few megabytes. No runtime, no web view, no drivers or services. Starts in a moment and stays out of the way.
     </td>
     <td width="25%" valign="top">
       <h3>🔌 Any MIDI port</h3>
@@ -79,13 +79,15 @@ No programming tools are needed. Pick your system, download one file, and run it
 
    | Your computer | Download | Then |
    |---|---|---|
-   | **Windows** 10 or 11 | `axe-grid-<version>-windows-x64.zip` | Unzip it, open the folder, double-click `axegrid.exe` |
+   | **Windows** 10 or 11 | `axe-grid-<version>-windows-x64.zip` | Unzip it, open the folder, double-click `axegrid-setup.exe`: it puts Axe-Grid on your desktop and in the Start menu. (Or just run `axegrid.exe` from the folder.) |
    | **Mac** (Apple silicon or Intel) | `axe-grid-<version>-macos-universal.zip` | Unzip it, drag **Axe-Grid** to Applications, then right-click it and choose **Open** the first time |
    | **Linux** (64-bit Intel/AMD) | `axe-grid-<version>-linux-x86_64.tar.gz` | Unpack it and run `./axegrid` |
    | **Linux** (64-bit ARM) | `axe-grid-<version>-linux-aarch64.tar.gz` | Unpack it and run `./axegrid` |
 
-3. Connect your Axe-Fx II and switch it on, start Axe-Grid, choose the MIDI ports of the unit at the
-   top of the window, and press **Connect**. No unit at hand? Press **Simulator** to look around.
+3. Connect your Axe-Fx II and switch it on, then start Axe-Grid. It looks for the unit by itself,
+   on USB first and then on your MIDI interfaces. If it does not find it, press **Find my Axe-Fx**,
+   or choose the MIDI ports at the top of the window and press **Connect**. No unit at hand? Press
+   **Simulator** to look around.
 
 Windows and macOS will warn you the first time, because the builds are not yet signed with a paid
 certificate. The step-by-step guide shows what to click, how to connect the unit, and what to do
@@ -146,7 +148,7 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
   <tr>
     <td width="33%" valign="top">
       <h4>🧱 Presets and scenes</h4>
-      Step through presets or jump to a number · rename · save, with a confirmation that names the slot being overwritten · eight scenes · tempo, tap and CPU load.
+      Step through presets or jump to a number · rename · save, with a confirmation that names the slot being overwritten · a browser of every slot with search, copy, export, import and backup · eight scenes · tempo, tap and CPU load.
     </td>
     <td width="33%" valign="top">
       <h4>🔀 Grid</h4>
@@ -154,7 +156,13 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
     </td>
     <td width="33%" valign="top">
       <h4>🎚️ Blocks</h4>
-      Pages for 38 block types · bypass and X/Y · knobs, faders, switches and lists with the unit's display text · amp and cab type lists · Parametric EQ curve · looper and Tone Match buttons.
+      Pages for 38 block types · bypass and X/Y · knobs, faders, switches and lists with the unit's display text · amp and cab type lists · curves for the EQs, filter, compressor, gates and more · looper and Tone Match buttons.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <h4>📦 User cabs</h4>
+      On an XL or XL+: the names of all 1024 user cabs · export to a file · import a file into a slot · try a cab in the preset's cab block. Import is new and not yet confirmed on a unit.
     </td>
   </tr>
   <tr>
@@ -170,15 +178,17 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
       <h4>📖 An open protocol spec</h4>
       <a href="spec/SPEC.md"><code>spec/SPEC.md</code></a> documents the Axe-Fx II SysEx messages Axe-Grid uses, each fact tagged with how it was verified, for anyone building their own tools.
     </td>
+    <td width="33%" valign="top"></td>
+    <td width="33%" valign="top"></td>
   </tr>
 </table>
 
-Not there yet: modifiers, preset and cab management, scene and block copy/paste, meters, most
-graphs, global settings and undo. The full list, ranked, is in [ROADMAP.md](ROADMAP.md).
+Not there yet: modifiers, scene and block copy/paste, bank files, meters, global settings and
+undo. The full list, ranked, is in [ROADMAP.md](ROADMAP.md).
 
 ## Built for agents
 
-Every menu item, button, knob and shortcut runs a command from one registry of 52 commands
+Every menu item, button, knob and shortcut runs a command from one registry of 62 commands
 ([`docs/commands.md`](docs/commands.md)). The window, the CLI, the JSON control channel and the MCP
 server all call the same commands, so anything you can click, a script or an AI agent can do too.
 
@@ -207,7 +217,7 @@ you are looking at. See [`docs/control-protocol.md`](docs/control-protocol.md) a
   in strict layers, from SysEx framing up to the UI ([`docs/architecture.md`](docs/architecture.md)).
 - **Never crash:** no `unsafe`, and no `unwrap`, `expect` or `panic!` outside tests. A device that
   answers garbage, or not at all, produces an error message, not a crash.
-- **Tested without hardware:** 104 tests run against the simulated device, including hostile
+- **Tested without hardware:** 146 tests run against the simulated device, including hostile
   command parameters and literal bytes captured from a real unit.
 - **Clean-room:** written from a functional specification and observed behaviour. No code, artwork,
   fonts or skins from the original editor ([`docs/clean-room.md`](docs/clean-room.md) lists

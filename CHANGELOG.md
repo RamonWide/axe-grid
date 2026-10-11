@@ -8,7 +8,41 @@ listed under "Changed".
 
 ## [Unreleased]
 
+### Added
+
+- **Preset manager** (the Presets button): the names of every preset slot, read without loading
+  them, with a search box; load, copy to another slot, save the current sound to another slot,
+  export to a `.syx` file, import a file into the edit buffer, and back up every preset to a
+  folder. Commands `preset.names`, `preset.export`, `preset.export_range`, `preset.import` and
+  `preset.copy`.
+- **Cabinet manager** (the Cabs button) for the XL and XL+: the names of the 1024 user cabs,
+  export to a `.syx` file, import a file into a slot, and "use in cab block" to hear a cab.
+  Commands `cab.names`, `cab.export` and `cab.import`. Import has not yet been confirmed on a
+  unit; the window says so.
+- **Curves** beside the controls of thirteen block types: Graphic EQ, Filter, the delay's and
+  reverb's EQ pages, the amp's Speaker page, the cab's cuts, Crossover, Compressor,
+  Gate/Expander, the input gate, Multiband Compressor and the two ADSR envelopes, next to the
+  Parametric EQ that had one. All are computed from the settings.
+- **Type a value**: double-click the value under a knob or a fader, type the number you want and
+  press Enter (`param.set_displayed`). The unit limits a value that is out of range.
+- **The unit is found automatically** when the app starts: its USB port first, then every other
+  MIDI port. "Find my Axe-Fx" does the same on demand (`device.connect_auto`).
+- **The app icon** on the window, the taskbar and the Windows executables.
+- **A Windows installer**, `axegrid-setup.exe`, in the Windows download: it copies the app into
+  your user account, puts a shortcut on the desktop and in the Start menu, and lists Axe-Grid
+  under Installed apps so it can be removed there. It needs no administrator rights.
+- `sysex.inspect_file` reports the name stored in a preset or cabinet file and whether its
+  checksum holds.
+
+### Fixed
+
+- Graphic EQ pages, and the amp's graphic EQ, showed no faders on a unit when the type name was
+  longer than the page expected ("10 BAND VAR Q" against "10 Band").
+
 ### Changed
+
+- Faders are twice as tall, and a fader's cap now follows the pointer over the length of its
+  track.
 
 - Updated the window toolkit (egui and eframe) from 0.31 to 0.36 and the MIDI library (midir) from
   0.10 to 0.11. Building from source now needs Rust 1.95 or newer.

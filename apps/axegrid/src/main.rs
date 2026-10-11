@@ -29,6 +29,9 @@ impl eframe::App for App {
     }
 }
 
+/// The app icon, rendered from `assets/icon/axe-grid.svg` by `scripts/render-icon.py`.
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icon/axe-grid.png");
+
 struct Options {
     control_port: Option<u16>,
     token_file: Option<PathBuf>,
@@ -67,13 +70,15 @@ fn start_control(options: &Options, ctx: egui::Context) -> Result<Option<Receive
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = parse_args()?;
-    let native = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1320.0, 800.0])
-            .with_min_inner_size(axegrid_ui_egui::MIN_WINDOW)
-            .with_title("Axe-Grid"),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1320.0, 800.0])
+        .with_min_inner_size(axegrid_ui_egui::MIN_WINDOW)
+        .with_title("Axe-Grid");
+    // A window without its icon is still a window.
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(ICON_PNG) {
+        viewport = viewport.with_icon(icon);
+    }
+    let native = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
         "Axe-Grid",
         native,

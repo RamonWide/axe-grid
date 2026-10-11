@@ -48,6 +48,8 @@ fn store(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
         None => engine.state.preset.number,
     };
     engine.session()?.request(&Request::StorePreset(number))?;
+    let name = engine.state.preset.name.clone();
+    engine.state.preset_names.insert(number, name);
     Ok(json!({ "stored_to": number }))
 }
 

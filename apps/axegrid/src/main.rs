@@ -14,7 +14,7 @@ struct App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Control requests run here, on the UI thread, exactly like clicks.
         if let Some(requests) = &self.control {
             while let Ok(pending) = requests.try_recv() {
@@ -22,7 +22,10 @@ impl eframe::App for App {
                 pending.respond(outcome);
             }
         }
-        self.shell.ui(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.shell.ui(ui);
     }
 }
 

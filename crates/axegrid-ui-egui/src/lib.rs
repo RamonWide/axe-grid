@@ -281,7 +281,7 @@ impl Shell {
     }
 
     fn shortcuts(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        if ctx.wants_keyboard_input() {
+        if ctx.egui_wants_keyboard_input() {
             return;
         }
         for command in registry().iter().filter(|c| !c.shortcut.is_empty()) {
@@ -300,7 +300,7 @@ impl Shell {
                 menus.entry(menu).or_default().push((item, command));
             }
         }
-        egui::menu::bar(ui, |ui| {
+        egui::MenuBar::new().ui(ui, |ui| {
             for (menu, items) in menus {
                 ui.menu_button(menu, |ui| {
                     for (item, command) in items {
@@ -313,7 +313,7 @@ impl Shell {
                             .clicked()
                         {
                             actions.push((command.id, Value::Null));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 });
@@ -482,17 +482,17 @@ impl Shell {
             let live = view.states.iter().find(|s| s.block == id);
             if ui.button("Edit").clicked() {
                 actions.push(("block.select", json!({ "block": id })));
-                ui.close_menu();
+                ui.close();
             }
             let engaged = live.is_none_or(|s| s.engaged);
             if ui.button(if engaged { "Bypass" } else { "Engage" }).clicked() {
                 actions.push((if engaged { "block.bypass" } else { "block.engage" }, json!({ "block": id })));
-                ui.close_menu();
+                ui.close();
             }
             let on_x = live.is_none_or(|s| s.xy == XyState::X);
             if ui.button(if on_x { "Switch to Y" } else { "Switch to X" }).clicked() {
                 actions.push(("block.set_xy", json!({ "block": id, "state": if on_x { "Y" } else { "X" } })));
-                ui.close_menu();
+                ui.close();
             }
             ui.separator();
         }
@@ -504,14 +504,14 @@ impl Shell {
                     for block in free.filter(|b| !placed.contains(&b.id) && !blocks::is_fixed(b.id)) {
                         if ui.button(&block.name).clicked() {
                             actions.push(("grid.place_block", with_cell(json!({ "block": block.id }))));
-                            ui.close_menu();
+                            ui.close();
                         }
                     }
                 });
             }
             if ui.button("Shunt").on_hover_text("A plain pass-through").clicked() {
                 actions.push(("grid.place_shunt", cell.clone()));
-                ui.close_menu();
+                ui.close();
             }
             return;
         }
@@ -523,14 +523,14 @@ impl Shell {
                 if ui.button(format!("{mark}Cable from row {} ({source})", from + 1)).clicked() {
                     let command = if fed { "grid.disconnect" } else { "grid.connect" };
                     actions.push((command, with_cell(json!({ "from_row": from }))));
-                    ui.close_menu();
+                    ui.close();
                 }
             }
             ui.separator();
         }
         if ui.button(RichText::new("Remove").color(theme::DANGER)).clicked() {
             actions.push(("grid.clear_cell", cell.clone()));
-            ui.close_menu();
+            ui.close();
         }
     }
 
@@ -687,13 +687,13 @@ impl Shell {
                     let longest = block.name.split(' ').max_by_key(|word| word.len()).unwrap_or_default();
                     let fits = |size: &f32| {
                         let font = FontId::proportional(size * scale);
-                        ui.fonts(|fonts| fonts.layout_no_wrap(longest.to_owned(), font, ink)).size().x <= room
+                        ui.fonts_mut(|fonts| fonts.layout_no_wrap(longest.to_owned(), font, ink)).size().x <= room
                     };
                     let size = [11.0_f32, 10.0, 9.0].into_iter().find(fits).unwrap_or(8.5);
                     let font = FontId::proportional(size * scale);
                     let mut job = egui::text::LayoutJob::simple(block.name.clone(), font, ink, room);
                     job.halign = Align::Center;
-                    let galley = ui.fonts(|fonts| fonts.layout_job(job));
+                    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
                     let top = rect.center().y - galley.size().y / 2.0;
                     painter.galley(pos2(rect.center().x, top), galley, ink);
                     if live.is_some_and(|s| s.xy == XyState::Y) {
@@ -898,7 +898,7 @@ impl Shell {
                 }
                 // The wheel steps through a list, as it turns a knob.
                 let steps_through = matches!(kind, "choice" | "knob") && control.max > 0;
-                let turned = if response.contains_pointer() { ui.input(|i| i.raw_scroll_delta.y) } else { 0.0 };
+                let turned = if response.contains_pointer() { knob::wheel_turned(ui) } else { 0.0 };
                 if steps_through && turned != 0.0 {
                     ui.input_mut(|input| input.smooth_scroll_delta = Vec2::ZERO);
                     let limit = control.choices.as_ref().map_or(control.max, |c| c.len().saturating_sub(1) as u32);
@@ -1078,7 +1078,7 @@ impl Shell {
         let pages = editor["pages"].as_array().map(Vec::as_slice).unwrap_or_default();
         let rows = pages.get(self.page.min(pages.len().saturating_sub(1))).map_or(1, |page| PageShape::of(page).rows());
         let wanted = EDITOR_CHROME + rows as f32 * knob::CELL.y;
-        wanted.min(ctx.screen_rect().height() * EDITOR_SHARE)
+        wanted.min(ctx.content_rect().height() * EDITOR_SHARE)
     }
 
     /// The tuner read-out, shown while the unit's tuner is on.
@@ -1160,7 +1160,9 @@ impl Shell {
     }
 
     /// Draws one frame and runs whatever the user asked for.
-    pub fn ui(&mut self, ctx: &egui::Context) {
+    pub fn ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         if !std::mem::replace(&mut self.themed, true) {
             theme::apply(ctx);
         }
@@ -1170,22 +1172,22 @@ impl Shell {
             self.shortcuts(ctx, &mut actions);
         }
         let bar = egui::Frame::new().fill(theme::BACKDROP).inner_margin(egui::Margin::symmetric(10, 4));
-        egui::TopBottomPanel::top("menu").frame(bar).show(ctx, |ui| self.menu_bar(ui, &mut actions));
+        egui::Panel::top("menu").frame(bar).show(ui, |ui| self.menu_bar(ui, &mut actions));
         let header = egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 9));
-        egui::TopBottomPanel::top("header").frame(header).show(ctx, |ui| self.header(ui, &mut actions));
-        egui::TopBottomPanel::bottom("status")
+        egui::Panel::top("header").frame(header).show(ui, |ui| self.header(ui, &mut actions));
+        egui::Panel::bottom("status")
             .frame(bar)
-            .show(ctx, |ui| ui.label(RichText::new(&self.status).small().color(theme::TEXT_DIM)));
+            .show(ui, |ui| ui.label(RichText::new(&self.status).small().color(theme::TEXT_DIM)));
         if let Some(block) = self.engine.state().selected_block {
             let editor = egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10));
-            egui::TopBottomPanel::bottom("block-editor")
+            egui::Panel::bottom("block-editor")
                 .frame(editor)
                 .resizable(false)
-                .exact_height(self.editor_height(ctx))
-                .show(ctx, |ui| self.block_editor(ui, block, &mut actions));
+                .exact_size(self.editor_height(ctx))
+                .show(ui, |ui| self.block_editor(ui, block, &mut actions));
         }
         let stage = egui::Frame::new().fill(theme::BACKDROP).inner_margin(egui::Margin::same(16));
-        egui::CentralPanel::default().frame(stage).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(stage).show(ui, |ui| {
             if self.engine.is_connected() {
                 self.gesture = self.grid(ui, &mut actions);
             } else {

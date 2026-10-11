@@ -8,6 +8,12 @@ listed under "Changed".
 
 ## [Unreleased]
 
+### Changed
+
+- Updated the window toolkit (egui and eframe) from 0.31 to 0.36 and the MIDI library (midir) from
+  0.10 to 0.11. Building from source now needs Rust 1.95 or newer.
+- Requests on the control channel are answered while the window is minimized or hidden.
+
 ## [0.1.0] - 2026-10-11
 
 The first public version: an early alpha.

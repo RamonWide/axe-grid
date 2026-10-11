@@ -6,6 +6,9 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      # These share types and only build when they move together.
+      egui:
+        patterns: ["egui*", "eframe"]
       rust-minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: github-actions

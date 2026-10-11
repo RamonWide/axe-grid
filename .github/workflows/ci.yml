@@ -22,7 +22,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -36,7 +36,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Linux build packages
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
@@ -51,7 +51,7 @@ jobs:
     name: Oldest supported Rust
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Linux build packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
       - name: Read rust-version from Cargo.toml
@@ -68,7 +68,7 @@ jobs:
     name: Generated docs are current
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Linux build packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
       - uses: dtolnay/rust-toolchain@stable

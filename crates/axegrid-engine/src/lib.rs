@@ -7,9 +7,12 @@ mod device_cmds;
 mod edit_cmds;
 mod file_cmds;
 mod graphs;
+mod history_cmds;
 mod library_cmds;
+mod lists_cmds;
 mod live_cmds;
 mod preset_cmds;
+pub mod worker;
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -24,9 +27,10 @@ use serde_json::{json, Value};
 pub use axegrid_sysex::XyState;
 pub use command::{Args, CommandError, CommandSpec, ParamDoc};
 pub use live_cmds::TEMPO_RANGE;
+pub use worker::{View, Worker};
 
 /// Everything a front end may display. Changed only by commands.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct State {
     pub model: Option<Model>,
     pub firmware: Option<(u8, u8)>,
@@ -74,7 +78,12 @@ const PLAIN_ROW: usize = 10;
 pub struct Engine {
     session: Option<Session<Box<dyn Transport>>>,
     state: State,
+    /// Definitions loaded from a file; the device's own lists come first.
     defs: Option<Definitions>,
+    /// Choice lists read from the device.
+    lists: lists_cmds::Lists,
+    /// Edits that can be undone and redone.
+    history: history_cmds::History,
     /// When tempo.tap last ran.
     last_tap: Option<std::time::Instant>,
 }
@@ -88,7 +97,9 @@ pub fn registry() -> &'static [&'static CommandSpec] {
             live_cmds::COMMANDS,
             preset_cmds::COMMANDS,
             library_cmds::COMMANDS,
+            history_cmds::COMMANDS,
             edit_cmds::COMMANDS,
+            lists_cmds::COMMANDS,
             file_cmds::COMMANDS,
         ]
         .into_iter()
@@ -133,11 +144,16 @@ impl Engine {
         if !(params.is_object() || params.is_null()) {
             return Err(CommandError::BadParam { name: "params", problem: "expected a JSON object".into() });
         }
+        let preset = self.state.preset.number;
         let result = (spec.run)(self, &Args(params));
         // A dead link must not leave the engine claiming to be connected.
         if let Err(CommandError::Device(axegrid_device::SessionError::Io(_))) = &result {
             self.session = None;
             self.state.model = None;
+        }
+        // The history is that of one edit buffer.
+        if self.session.is_none() || self.state.preset.number != preset {
+            self.history.clear();
         }
         result
     }
@@ -149,6 +165,7 @@ impl Engine {
     /// Adopts a freshly connected session and loads the current preset.
     fn attach(&mut self, session: Session<Box<dyn Transport>>, simulated: bool) -> Result<(), CommandError> {
         self.state = State { model: Some(session.model()), simulated, ..State::default() };
+        self.forget_device();
         self.session = Some(session);
         self.state.firmware = self.session()?.firmware_version().ok();
         self.state.midi_channel = self.session()?.midi_channel().unwrap_or(0);
@@ -170,6 +187,31 @@ impl Engine {
             self.refresh_params()?;
         }
         Ok(())
+    }
+
+    /// Drops what was learned from a device that is no longer the one connected.
+    fn forget_device(&mut self) {
+        self.history.clear();
+        self.forget_lists();
+    }
+
+    /// Switches to a scene and reads the bypass and X/Y states it carries.
+    fn go_to_scene(&mut self, index: u8) -> Result<(), CommandError> {
+        let request = axegrid_sysex::Request::Scene(Some(index));
+        if let axegrid_sysex::Reply::Scene(scene) = self.session()?.request(&request)? {
+            self.state.preset.scene = scene;
+        }
+        self.refresh_preset()
+    }
+
+    /// Records a value the device reported, if it belongs to the selected block.
+    fn remember(&mut self, value: &ParamValue) {
+        if self.state.selected_block == Some(value.address.block) {
+            match self.state.params.iter_mut().find(|p| p.address == value.address) {
+                Some(slot) => *slot = value.clone(),
+                None => self.state.params.push(value.clone()),
+            }
+        }
     }
 
     fn refresh_params(&mut self) -> Result<(), CommandError> {
@@ -215,6 +257,10 @@ impl Engine {
         let effect_type = blocks::by_id(value.address.block).map(|b| b.effect_type);
         let def =
             effect_type.and_then(|t| self.defs.as_ref()?.effect(t.into())).and_then(|e| e.param(value.address.param));
+        // What the device listed, or failing that what a definitions file says.
+        let choices = effect_type
+            .and_then(|t| self.choices(t, value.address.param))
+            .or_else(|| def.filter(|d| d.is_enum()).map(|d| &d.strings));
         json!({
             "block": value.address.block,
             "param": value.address.param,
@@ -224,7 +270,7 @@ impl Engine {
             "text": value.text,
             // Highest choice index; 0 for a continuous parameter.
             "choice_max": value.extra[1],
-            "choices": def.filter(|d| d.is_enum()).map(|d| &d.strings),
+            "choices": choices,
         })
     }
 
@@ -363,6 +409,8 @@ impl Engine {
             "tuner": self.tuner_json(),
             "looper": self.looper_json(),
             "definitions_loaded": self.defs.is_some(),
+            "lists": { "known": self.lists_known(), "missing_for_selected_block": self.lists_missing() },
+            "history": self.history_summary(),
             "preset": { "number": view.number, "name": view.name, "scene": view.scene + 1 },
             "library": {
                 "preset_slots": s.model.map(axegrid_model::library::preset_count),

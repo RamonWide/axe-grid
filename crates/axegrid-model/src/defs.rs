@@ -6,6 +6,9 @@ use std::fmt;
 pub const RAW_MAX: u16 = 65534;
 /// Type word of an enumerated parameter.
 pub const TYPE_ENUM: u32 = 0x10;
+/// Type word of a parameter whose value is a position in the device's cab
+/// list. Its names come from the cab list, not from a list of its own.
+pub const TYPE_CAB_LIST: u32 = 0x20;
 
 const HEADER_LEN: usize = 46;
 const RESERVED_LEN: usize = 6;

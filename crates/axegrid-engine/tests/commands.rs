@@ -125,6 +125,12 @@ fn hostile_parameters_are_errors_not_panics() {
         ("block.select", json!({ "block": 124 })),
         ("sysex.inspect_file", json!({ "path": "does/not/exist.syx" })),
         ("definitions.load", json!({ "path": 7 })),
+        ("block.read_lists", json!({ "budget": -1 })),
+        ("block.read_lists", json!({ "block": "Nonexistent" })),
+        ("block.read_lists", json!({ "block": 250 })),
+        ("param.set_choice", json!({ "block": 106, "param": 0, "choice": 5 })),
+        ("edit.undo", json!({})),
+        ("edit.redo", json!({})),
         ("preset.next", json!([1, 2, 3])),
         ("no.such.command", json!({})),
     ];

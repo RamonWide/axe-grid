@@ -1,9 +1,11 @@
 # Axe-Grid roadmap
 
-**Stage: early alpha** · next: 0.2 "safe daily editing" (undo, a session that cannot freeze the
-window, type lists read from the unit, first checks on macOS, Linux and the other models)
+**Stage: early alpha** · next: 0.2 "safe daily editing" (scene and block copy and paste, first
+checks on macOS, Linux and the other models; undo, a session that cannot freeze the window and
+type lists read from the unit are in)
 
-> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** first version ·
+> **Last reviewed:** 2026-10-11 · **Last updated:** 2026-10-11 · **Change:** undo and redo, the
+> device session on its own thread, type lists read from the unit ·
 > **Target:** the original editor for the Axe-Fx II family
 
 A one-page summary of how close Axe-Grid 0.1.0 is to the original editor for the Axe-Fx II.
@@ -22,17 +24,17 @@ two, **L** a month or more. There is not yet enough project history to give cali
 | | Value | Kind |
 |---|---|---|
 | **Feature breadth** | **~45%** (40–50%) | estimated: areas below, weighted by how often a player uses them |
-| **Ready for real work** | **~30%** (25–35%) | estimated: breadth, discounted for no undo, one tested unit and one tested OS |
-| Commands | 62 | measured: `axegrid-cli commands` |
+| **Ready for real work** | **~30%** (25–35%) | estimated: breadth, discounted for one tested unit and one tested OS; not yet re-estimated now that undo is in |
+| Commands | 66 | measured: `axegrid-cli commands` |
 | Block types with full pages | 38 | measured: `layouts.json` |
 | Device message types implemented | 40 of roughly 56 the original uses | measured / estimated |
-| Automated tests | 146, all against the simulator | measured |
+| Automated tests | 166, all against the simulator | measured |
 | Units tested | 1 (Axe-Fx II XL, firmware 32.00) | measured |
 | Operating systems tested with a unit | 1 of 3 (Windows 11) | measured |
 
 **Why early alpha.** The core loop works on real hardware: connect, read a preset, edit any
 block's parameters, re-route the grid, switch scenes and save. But whole areas of the original are
-missing (modifiers, global settings), there is no undo, and everything has been checked
+missing (modifiers, global settings), and everything has been checked
 on a single unit. One test sequence made that unit stop responding until it was power-cycled; the
 cause was fixed and is written up in [gaps](docs/gaps.md#hardware-incident-2026-10-11-resolved).
 
@@ -52,7 +54,7 @@ no known way to hang the unit.
 | Protocol verification | ~70% of what is used | S | [gaps](docs/gaps.md#hardware-verification): store, tuner calibration and modifiers remain |
 | Platforms | ~55% | M | Windows tested, with an installer that adds desktop and Start-menu shortcuts. macOS and Linux build in CI, untested with a unit. No signed builds |
 | Connection | ~70% | M | The unit is found by itself at start (USB port first, then other MIDI ports). Any MIDI port the system offers. USB needs a system driver: the vendor's, or [AxeTwoDriver](https://github.com/RamonWide/AxeTwoDriver) on current Windows |
-| Stability and safety | ~50% | M | No panics by lint; the session still runs on the UI thread; no undo |
+| Stability and safety | ~60% | M | No panics by lint; the device session runs on its own thread, so a slow or silent unit does not freeze the window; undo and redo for edits · commands still wait their turn behind a silent unit, and none can be cancelled |
 | Automation (CLI, control channel, MCP) | ~80% | S | Works end to end; no per-client capabilities yet ([SECURITY](SECURITY.md)) |
 | Offline use | 0% | M | Nothing can be viewed or edited without a unit or the simulator |
 | Localization | 0% | M | English only |
@@ -62,7 +64,7 @@ no known way to hang the unit.
 | Area | % ready | Size | What is there · what is missing |
 |---|---:|:-:|---|
 | Routing grid | ~75% | S | Place, move, remove, cable, runs to input and output · row and column tools, clear grid, cables across a column move |
-| Block parameters | ~70% | M | Pages for 38 block types, all control kinds, X/Y, bypass · type lists without the original's definition file, a few special controls |
+| Block parameters | ~75% | M | Pages for 38 block types, all control kinds, X/Y, bypass, type lists read from the unit · a few special controls, lists kept between sessions |
 | Presets | ~70% | S | Select, rename, save, browser with all names, copy, save to another slot, export, import, backup of all · swap, bank and bundle files, exporting unsaved edits |
 | Scenes | ~40% | S | Select, per-scene output levels · names, copy and paste, swap, set all to X or Y |
 | Modifiers and controllers | ~5% | L | The Controllers block's pages · attaching a controller to a parameter, the modifier dialog and curve |
@@ -71,7 +73,7 @@ no known way to hang the unit.
 | Block tools | 0% | S | Copy and paste a block or its X/Y state, reset to defaults, block library, global blocks |
 | Cabinet management | ~45% | M | User cab list, export, import (not yet confirmed on a unit), use in the cab block; XL and XL+ only · `.wav`/`.ir` conversion, scratchpads, Mark I/II |
 | Global, I/O and MIDI settings | 0% | M | Everything |
-| Undo and redo | 0% | M | Everything |
+| Undo and redo | ~70% | S | Parameters, bypass, X/Y, the grid with its cables, the preset name; checked on a unit · scenes, changes made on the front panel, a history that survives loading a preset |
 
 ## Milestones
 
@@ -83,10 +85,11 @@ Everything in the [changelog](CHANGELOG.md#010---2026-10-11).
 
 The aim is that a player can use Axe-Grid for an evening without reaching for the original.
 
-- Undo and redo for parameter and grid edits.
-- Move the device session off the UI thread, so a slow or silent unit cannot freeze the window.
-- Read type lists (amp, cab, effect types) from the unit, removing the dependency on the original
-  editor's definition file.
+- ~~Undo and redo for parameter and grid edits.~~ Done, with bypass, X/Y and the preset name.
+- ~~Move the device session off the UI thread, so a slow or silent unit cannot freeze the
+  window.~~ Done.
+- ~~Read type lists (amp, cab, effect types) from the unit, removing the dependency on the
+  original editor's definition file.~~ Done; checked over USB, not yet over a 5-pin MIDI cable.
 - ~~Preset browser with the names of all slots.~~ Done.
 - Scene names, copy and paste; block copy, paste and reset.
 - First hardware checks on macOS and Linux, and on an Axe-Fx II (Mark I or II) and an XL+.

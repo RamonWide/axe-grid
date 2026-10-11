@@ -3,7 +3,7 @@
 Generated from the registry by `scripts/gen-command-docs.py`. Do not edit by hand;
 regenerate after adding or changing a command (see `CONTRIBUTING.md`).
 
-62 commands.
+66 commands.
 
 ## device
 
@@ -228,6 +228,20 @@ Write a cabinet .syx file into a user cab slot on the device, overwriting what i
 | `cab` | integer | yes | User cab number to overwrite, counted from 1 |
 | `path` | string | yes | Cabinet file to send |
 
+## edit
+
+### `edit.undo`
+
+Take back the last edit to a parameter, bypass, X/Y state, the grid or the preset name, by sending the device what was there before. An edit made in another scene or on a block's other X/Y set switches back to it first. Loading a preset empties the history. Menu: Edit > Undo. Shortcut: Ctrl+Z.
+
+### `edit.redo`
+
+Make the edit that was last undone again. Menu: Edit > Redo. Shortcut: Ctrl+Y.
+
+### `edit.history`
+
+The edits that can be undone and redone, the next one first.
+
 ## block
 
 ### `block.select`
@@ -340,7 +354,7 @@ Move a continuous parameter up or down in steps of one percent of its range.
 
 ### `param.set_choice`
 
-Set an enumerated parameter by the text of the choice. Needs loaded definitions.
+Set an enumerated parameter by the text of the choice. The list of choices is read from the device if it has not been yet.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -426,6 +440,17 @@ Remove the cable between a cell and a cell in the column on its left.
 | `column` | integer | yes | 0 to 11, left to right |
 | `row` | integer | yes | 0 to 3, top to bottom |
 | `from_row` | integer | yes | Row, 0 to 3, of the source cell in the column to the left |
+
+## block
+
+### `block.read_lists`
+
+Read from the device the choices of every list of a block: amp models, effect types, cabs and the like. Each list is read once and kept until the device disconnects. Only reads. The cab list is one request per cab, so over a 5-pin MIDI cable it takes a while.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Amp 1"; defaults to the selected block |
+| `budget` | integer | no | Most requests to send in this call; "missing" in the result counts the lists still to read. Without it everything is read |
 
 ## definitions
 

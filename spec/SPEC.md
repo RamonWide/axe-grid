@@ -93,12 +93,12 @@ for the rest].
 | `13` | — | CPU load | B |
 | `14` | — | Current preset number | B |
 | `15` | a 1, b 1 (preset number in two bytes) | Name of a stored preset, without loading it | B layout, H meaning |
-| `16` | effect 2×7, param 2×7 | Parameter metadata | B |
+| `16` | effect 2×7, param 2×7 | Parameter metadata | B layout, H meaning |
 | `17` | — | MIDI channel; reply is one byte, zero-based | B layout, H meaning |
 | `19` | user-cab number, laid out per model (4.5) | Send a user cab as a dump; answered by `7A` … `7B` … `7C` | B layout, H meaning (XL) |
 | `1D` | a 1, b 1 | Store preset (number in two bytes) | B layout, P meaning |
 | `20` | — | Grid layout and routing | B |
-| `28` | effect 2×7, param 2×7 | Enum strings of a parameter | B |
+| `28` | effect 2×7, param 2×7 | Enum strings of a parameter | B layout, H meaning |
 | `29` | scene 1 (`7F` = query) | Get/set scene | B layout, P meaning |
 | `2A` | — | Preset-edited flag | B layout, P meaning |
 | `2E` | effect 2×7, param 2×7, value 5×7 (an IEEE-754 single) | Set a parameter to a value in its displayed unit; answered by `02` | B layout, H meaning |
@@ -164,6 +164,24 @@ shown as "-40.0 dB", 100.0 a time shown as "100.0 ms", 3.0 a ratio shown as
 "3.00". A value outside the parameter's range is limited to the nearest end
 (a threshold sent as -200 read back as "OFF", raw 0). The reply is the `02`
 message with the raw value and text now in force.
+
+[H] `28` answers with every choice of an enumerated parameter in one
+message, in the order of its raw values: on firmware 32 the amp type has 266
+names in 3.6 kB, most lists a handful. It answers for a block that is not in
+the current preset as well. For a parameter that is not an enumeration the
+device answers with status code 27, and for a parameter ID it does not have
+with code 7. `16` reports type word `0x10` for an enumeration (`0xB0` for a
+block's bypass mode, which has strings too), with `max` its highest choice
+index.
+
+[H] The cab block's two cab parameters are not enumerations. `16` reports
+type word `0x20` and `max` 1216 for them, `01` and `02` report no highest
+choice index, and `28` is refused with code 27. Their raw value is a position
+in the cab list that `12` reads (4.6).
+
+[H] A block removed from the grid (`05` with block 0) and placed again in
+the same edit buffer came back with the parameter value it had (seen with
+one Parametric EQ and one parameter).
 
 [B ev_4659e67f] Reply matching: a request for `2E` is satisfied by `02`; `3B`
 by `07`; `0E` by `29`; `2B` by `2C`; `01`/`12`/`2B` by a `32` … `33` bracket.
@@ -305,7 +323,8 @@ little-endian:
   `u32 length` + bytes (no terminator), then 6 bytes [?] (zero in practice).
 
 Type word `0x10` marks an enumeration whose raw value is an index into the
-string list. Other type words encode unit and taper; bit meanings [?].
+string list; [H] `0x20` a position in the cab list (4.2). Other type words
+encode unit and taper; bit meanings [?].
 `scale` multiplies the engineering value for display (1000 for ms/Hz ranges).
 
 ## 7. Settings

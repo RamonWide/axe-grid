@@ -155,11 +155,16 @@ Then:
 ## Things to know
 
 - **Lists of types.** Names in drop-down lists (amp types, cab names, reverb types and so on) are
-  read from a file the original editor keeps on your computer. If Axe-Edit has been run on the
-  same computer for your model, Axe-Grid finds that file by itself and the lists are complete.
-  Without it, lists show the current value as the unit reports it, and you step through them with
-  the mouse wheel. Reading the names from the unit itself is on the [roadmap](../ROADMAP.md).
-- **No undo yet.** To get back to the saved preset, select it again.
+  read from your unit the first time you open a block of that kind, so they match its firmware.
+  It takes a moment: until a list has arrived it shows the current value, and you can step
+  through it with the mouse wheel. The list of cabs is the longest; over a 5-pin MIDI cable give
+  it a little while.
+- **Undo and redo.** Ctrl+Z takes back your last change to a knob, a switch, a list, bypass, X/Y,
+  the preset name or the grid; Ctrl+Y makes it again. The **Undo** and **Redo** buttons say what
+  they will act on when you point at them. Loading another preset empties the history, and a
+  save, a copy over another preset or a cab import cannot be undone: those ask first.
+- **A slow unit does not freeze the window.** When the unit takes its time, the status bar at the
+  bottom says it is being waited for, and what you click is done in order once it answers.
 - **Anything that overwrites asks first.** Saving a preset, copying one over another and importing
   a cab each show which slot will be replaced before anything is sent.
 - **Not everything is there.** Modifiers, global settings and more are still missing; see the

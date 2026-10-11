@@ -94,7 +94,9 @@ Then:
    - `params`: one `req(..)`/`opt(..)` per parameter.
    - `enabled`: `always`, `connected`, or your own predicate returning the reason it is unavailable.
    - `run`: read parameters through `Args` only; return `CommandError`, never panic; update `State`
-     so the UI reflects the result.
+     so the UI reflects the result. If the command edits the preset, record the edit so that it can
+     be undone: `record_param`, `record_xy`, `record_rename` or `recording_grid` in
+     `history_cmds.rs`. A command that loads another preset clears the history.
 5. **Tests** in `crates/axegrid-engine/tests/commands.rs`: the happy path, and its bad inputs added
    to `hostile_parameters_are_errors_not_panics`.
 6. **UI** (optional): if it deserves a dedicated widget, push `("your.command", json!({..}))` onto

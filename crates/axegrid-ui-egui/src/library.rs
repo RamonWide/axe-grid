@@ -3,16 +3,16 @@
 //! the rest of the shell they act only by running commands.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
 
+use axegrid_engine::CommandError;
 use axegrid_model::{blocks, library};
 use egui::{vec2, Align, Key, Layout, RichText};
 use serde_json::{json, Value};
 
 use crate::{theme, Action, Shell};
 
-/// Time spent reading names or backing up per frame, so the window stays live.
-const WORK_BUDGET: Duration = Duration::from_millis(25);
+/// Names asked for at a time, so that an edit made meanwhile does not wait long.
+const NAMES_PER_TURN: u16 = 8;
 const ROW_HEIGHT: f32 = 20.0;
 const LIST_SIZE: egui::Vec2 = vec2(430.0, 380.0);
 /// Extension of preset and cabinet files.
@@ -49,6 +49,10 @@ pub(crate) struct LibraryView {
     /// Text of the "copy to slot" box.
     copy_to: String,
     backup: Option<Backup>,
+    /// Something was asked of the unit and has not come back yet.
+    waiting: bool,
+    /// Whose turn it is when names are being read and presets backed up at once.
+    turn: usize,
 }
 
 impl LibraryView {
@@ -82,49 +86,80 @@ fn file_dialog() -> rfd::FileDialog {
 }
 
 impl Shell {
-    /// Reads a few more names, or writes a few more backup files.
+    /// Asks the unit for a few more names, or for the next preset of a
+    /// backup, once the last answer is in.
     pub(crate) fn library_work(&mut self) {
-        let Some(model) = self.engine.state().model else { return };
-        let started = Instant::now();
-        let slots = library::preset_count(model);
-        while self.library.presets_open && !self.library.presets_read && started.elapsed() < WORK_BUDGET {
-            let slice = json!({ "first": self.library.preset_cursor, "count": 1 });
-            let got = self.engine.run("preset.names", &slice).ok().and_then(|r| r["names"].as_array().map(Vec::len));
-            self.library.preset_cursor += 1;
-            // A refusal or an error ends the list: the unit has no more slots.
-            self.library.presets_read = got != Some(1) || self.library.preset_cursor >= slots;
+        if self.library.waiting || self.view.state.model.is_none() {
+            return;
         }
-        let user_cabs = library::cab_slots(model).map_or(0, |slots| slots.user);
-        while self.library.cabs_open && !self.library.cabs_read && started.elapsed() < WORK_BUDGET {
-            let cab = self.library.cab_cursor.max(1);
-            let got = self.engine.run("cab.names", &json!({ "first": cab, "count": 1 }));
-            self.library.cab_cursor = cab + 1;
-            self.library.cabs_read = got.is_err() || cab >= user_cabs;
+        let mut wanted: Vec<Action> = Vec::new();
+        if self.library.presets_open && !self.library.presets_read {
+            wanted.push(("preset.names", json!({ "first": self.library.preset_cursor, "count": NAMES_PER_TURN })));
         }
-        if let Some(backup) = &mut self.library.backup {
+        if self.library.cabs_open && !self.library.cabs_read {
+            wanted.push(("cab.names", json!({ "first": self.library.cab_cursor.max(1), "count": NAMES_PER_TURN })));
+        }
+        if let Some(backup) = &self.library.backup {
             let params = json!({ "folder": backup.folder.display().to_string(), "first": backup.next, "count": 1 });
-            match self.engine.run("preset.export_range", &params) {
-                Ok(result) => {
-                    backup.written += result["written"].as_u64().unwrap_or(0);
-                    backup.next += 1;
-                    self.status = format!("Backing up presets: {} of {slots}", backup.next);
-                    if backup.next >= slots {
-                        self.status = format!("Backed up {} presets to {}", backup.written, backup.folder.display());
+            wanted.push(("preset.export_range", params));
+        }
+        if wanted.is_empty() {
+            return;
+        }
+        self.library.turn = self.library.turn.wrapping_add(1);
+        let (id, params) = wanted.swap_remove(self.library.turn % wanted.len());
+        self.library.waiting = true;
+        self.submit(id, params, true);
+    }
+
+    /// Takes in the unit's answer to what [`Self::library_work`] asked.
+    pub(crate) fn library_done(&mut self, id: &str, params: &Value, outcome: &Result<Value, CommandError>) {
+        self.library.waiting = false;
+        let Some(model) = self.view.state.model else { return };
+        let asked = |key: &str| params[key].as_u64().unwrap_or_default() as u16;
+        let (first, count) = (asked("first"), asked("count"));
+        let slots = library::preset_count(model);
+        match id {
+            // An answer to a question that "Read again" has since overtaken is dropped.
+            "preset.names" if first == self.library.preset_cursor => {
+                let got = outcome.as_ref().ok().and_then(|r| r["names"].as_array().map(Vec::len)).unwrap_or(0);
+                self.library.preset_cursor = first + count;
+                // Fewer names than asked for, a refusal or an error ends the list.
+                self.library.presets_read = got < usize::from(count) || self.library.preset_cursor >= slots;
+            }
+            "cab.names" if first == self.library.cab_cursor.max(1) => {
+                let user_cabs = library::cab_slots(model).map_or(0, |slots| slots.user);
+                self.library.cab_cursor = first + count;
+                self.library.cabs_read = outcome.is_err() || self.library.cab_cursor > user_cabs;
+            }
+            "preset.export_range" => {
+                let Some(backup) = self.library.backup.as_mut().filter(|backup| backup.next == first) else { return };
+                match outcome {
+                    Ok(result) => {
+                        backup.written += result["written"].as_u64().unwrap_or(0);
+                        backup.next += 1;
+                        self.status = format!("Backing up presets: {} of {slots}", backup.next);
+                        if backup.next >= slots {
+                            self.status =
+                                format!("Backed up {} presets to {}", backup.written, backup.folder.display());
+                            self.library.backup = None;
+                        }
+                    }
+                    Err(error) => {
+                        self.status = format!("Backup stopped at preset {}: {error}", backup.next);
                         self.library.backup = None;
                     }
                 }
-                Err(error) => {
-                    self.status = format!("Backup stopped at preset {}: {error}", backup.next);
-                    self.library.backup = None;
-                }
             }
+            _ => {}
         }
     }
 
     pub(crate) fn preset_manager(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let mut open = self.library.presets_open;
+        let view = self.view.clone();
         egui::Window::new("Presets").open(&mut open).resizable(false).default_pos([60.0, 120.0]).show(ctx, |ui| {
-            let state = self.engine.state();
+            let state = &view.state;
             let slots = state.model.map_or(0, library::preset_count);
             let current = state.preset.number;
             ui.horizontal(|ui| {
@@ -253,8 +288,9 @@ impl Shell {
 
     pub(crate) fn cab_manager(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let mut open = self.library.cabs_open;
+        let view = self.view.clone();
         egui::Window::new("User cabs").open(&mut open).resizable(false).default_pos([520.0, 120.0]).show(ctx, |ui| {
-            let state = self.engine.state();
+            let state = &view.state;
             let Some(slots) = state.model.and_then(library::cab_slots) else {
                 ui.label("The cabinet memory of this model is not known to Axe-Grid yet.");
                 ui.label(RichText::new("A hardware report from an owner would add it.").color(theme::TEXT_DIM));

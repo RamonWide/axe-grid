@@ -34,6 +34,21 @@ input gate (a level, a ratio and two times, and a value past the end of the rang
 frequency curves were checked for sensible shapes against the texts the unit
 reports for each block type.
 
+Choice lists, checked on the same unit over its USB port with
+`cargo run -p axegrid-device --example lists` (queries only) and then in the
+desktop app: every list of the amp block (25, the amp type among them with
+266 names in one 3.6 kB message), of the cab block and of the input gate;
+a list read for a block that is not in the preset; the refusal for a
+parameter that is not a list; and the cab picker, whose 1217 names come from
+the cab list one request each (about five seconds over USB while the window
+stayed in use).
+
+Undo and redo, checked on the same unit through the desktop app, in the edit
+buffer of an empty preset that was reloaded afterwards: a parameter, bypass,
+X/Y, the preset name, placing and removing a block, a cable, a removal that
+took a cable with it, and a move. A block removed and put back by undo came
+back with the parameter value it had.
+
 Still unverified on hardware:
 
 | Item | Risk if wrong | Where |
@@ -45,6 +60,9 @@ Still unverified on hardware:
 | Tuner note numbering (0 = A) and centre (63) | Wrong note name or needle | `Engine::tuner_json` |
 | Tuner and CC 15 when the owner remapped the tuner controller | Another function is triggered | `live_cmds.rs` |
 | `07` modifiers | Not implemented | `message.rs` |
+| Choice lists and the cab list over a 5-pin MIDI cable | Slow, or a timeout on the longest list (6 s is allowed) | `Session::param_strings`, `lists_cmds.rs` |
+| Undo of a grid edit that involves shunts | A shunt ID in two cells; the code lifts shunts first and is tested against the simulator only | `Engine::rebuild_grid` |
+| Undo of an edit made in another scene or on the other X/Y set | The wrong scene's bypass or X/Y is changed | `Engine::return_to` |
 
 `hwtest` never builds a store request. Keep it that way: test `preset.store`,
 `preset.copy` and `cab.import` only on a slot the owner of the unit has named
@@ -106,7 +124,6 @@ Not implemented at all:
 8. **Meters**: no level or gain-reduction meters anywhere.
 9. **Global and I/O settings, MIDI mapping, firmware tools, preferences,
    display offset, "pause communication", keyboard-shortcut editor.**
-10. **Undo/redo.**
 
 Partly there:
 
@@ -135,22 +152,33 @@ Partly there:
   and have not been checked against a played string.
 - **Dragging blocks**: within a column cables follow the block; across
   columns the device drops them.
-- **Choice lists** need the original editor's cache file
-  (`definitions.load_installed`); reading them from the device (`16`, `28`)
-  is not wired up.
+- **Choice lists** are read from the device when a block is opened and kept
+  until it disconnects; they are not saved, so each session reads them
+  again. Over a 5-pin MIDI cable the cab list (one request per cab) will
+  take a while; this has not been timed. The cab block's right-hand cab
+  picker is not laid out as a list on any page, so it gets none. The
+  original editor's cache file is no longer needed; `definitions.load` still
+  reads one for `definitions.describe`.
+- **Undo and redo** cover parameters, bypass, X/Y, the grid and the preset
+  name. Not covered: scene changes, the looper, and everything that writes to
+  the unit's memory (save, copy, cab import), which cannot be taken back. A
+  change made on the unit's front panel is not in the history, so an undo
+  after one restores what the editor last knew. The history is lost when a
+  preset is loaded.
 - **Offline use**: nothing can be viewed or edited without a device.
 
 ## Engineering
 
-- The session runs on the UI thread; a silent device freezes the window for
-  the 1.5 s timeout per request, and the window asks for the load every two
-  seconds. Move it to a worker with a command queue.
-- No undo. The device holds the truth; an undo stack would replay inverse
-  `param.set` commands.
+- The session has a thread of its own and the window no longer waits for
+  it, but commands still run one after another: against a silent device each
+  queued command waits out the 1.5 s timeout per request, and there is no way
+  to cancel one that is waiting.
+- The simulator gives every list the same three choices, so nothing tests a
+  list of realistic length or a parameter whose choices change with firmware.
 - The control channel has no per-command capabilities or filesystem roots.
 - `axegrid-cli` reports a failed bridge connection with the usage exit code.
 - Reading the names of all presets and cabs, and a backup, run a few
-  requests per frame from the window; from the CLI one call does all of it
+  requests at a time from the window; from the CLI one call does all of it
   and blocks until it is done.
-- The `62` currently registered commands cover a fraction of the original's
+- The `66` currently registered commands cover a fraction of the original's
   surface; the original has roughly 56 distinct device messages.

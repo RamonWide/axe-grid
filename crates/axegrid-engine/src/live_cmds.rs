@@ -30,7 +30,7 @@ pub const TEMPO_RANGE: (u64, u64) = (30, 250);
 /// Two taps further apart than this start a new measurement.
 const TAP_WINDOW: Duration = Duration::from_secs(2);
 
-fn tempo_address() -> Result<ParamAddress, CommandError> {
+pub(crate) fn tempo_address() -> Result<ParamAddress, CommandError> {
     let controllers = blocks::by_id(blocks::CONTROLLERS).map(|b| b.effect_type);
     controllers
         .and_then(|effect| params::id(effect, "CONTROLLERS_TEMPO"))
@@ -151,7 +151,14 @@ fn tempo_get(engine: &mut Engine, _: &Args<'_>) -> Result<Value, CommandError> {
 
 fn apply_tempo(engine: &mut Engine, bpm: u64) -> Result<Value, CommandError> {
     let bpm = bpm.clamp(TEMPO_RANGE.0, TEMPO_RANGE.1) as u16;
-    let applied = engine.session()?.set_param(tempo_address()?, bpm)?;
+    let address = tempo_address()?;
+    let before = match engine.state.tempo {
+        Some(tempo) => u32::from(tempo),
+        None => engine.value_before(address)?,
+    };
+    let applied = engine.session()?.set_param(address, bpm)?;
+    engine.remember(&applied);
+    engine.record_param(before, &applied);
     engine.state.tempo = u16::try_from(applied.value).ok();
     Ok(json!({ "bpm": engine.state.tempo }))
 }

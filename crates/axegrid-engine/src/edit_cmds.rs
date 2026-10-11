@@ -2,7 +2,7 @@
 
 use axegrid_model::defs::RAW_MAX;
 use axegrid_model::{blocks, grid, params};
-use axegrid_sysex::{ParamAddress, ParamValue, Request, XyState};
+use axegrid_sysex::{ParamAddress, Request, XyState};
 use serde_json::{json, Value};
 
 use crate::command::{connected, opt, req, Args, CommandError, CommandSpec};
@@ -23,19 +23,12 @@ fn address(engine: &Engine, args: &Args<'_>) -> Result<ParamAddress, CommandErro
     Ok(ParamAddress { block, param: engine.param_arg(args, block)? })
 }
 
-/// Records a value the device reported, if it belongs to the selected block.
-fn remember(engine: &mut Engine, value: &ParamValue) {
-    if engine.state.selected_block == Some(value.address.block) {
-        match engine.state.params.iter_mut().find(|p| p.address == value.address) {
-            Some(slot) => *slot = value.clone(),
-            None => engine.state.params.push(value.clone()),
-        }
-    }
-}
-
+/// Sets a parameter and remembers the edit, so that it can be undone.
 fn apply(engine: &mut Engine, address: ParamAddress, raw: u16) -> Result<Value, CommandError> {
+    let before = engine.value_before(address)?;
     let value = engine.session()?.set_param(address, raw.min(RAW_MAX))?;
-    remember(engine, &value);
+    engine.remember(&value);
+    engine.record_param(before, &value);
     Ok(engine.param_json(&value))
 }
 
@@ -90,8 +83,12 @@ fn toggle_bypass(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandE
 }
 
 fn set_xy(engine: &mut Engine, block: u16, state: XyState) -> Result<Value, CommandError> {
+    let before = engine.state.preset.states.iter().find(|s| s.block == block).map(|s| s.xy);
     engine.session()?.request(&Request::BlockXy(block, Some(state)))?;
     engine.refresh_preset()?;
+    if let Some(before) = before {
+        engine.record_xy(block, before, state);
+    }
     Ok(json!({ "block": block, "xy": if state == XyState::X { "X" } else { "Y" } }))
 }
 
@@ -119,7 +116,7 @@ fn toggle_xy(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError
 fn get(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let address = address(engine, args)?;
     let value = engine.session()?.get_param(address)?;
-    remember(engine, &value);
+    engine.remember(&value);
     Ok(engine.param_json(&value))
 }
 
@@ -134,8 +131,10 @@ const DISPLAYED_LIMIT: f64 = 1.0e6;
 fn set_displayed(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let address = address(engine, args)?;
     let wanted = args.number("value", -DISPLAYED_LIMIT, DISPLAYED_LIMIT)? as f32;
+    let before = engine.value_before(address)?;
     let value = engine.session()?.set_param_displayed(address, wanted)?;
-    remember(engine, &value);
+    engine.remember(&value);
+    engine.record_param(before, &value);
     Ok(engine.param_json(&value))
 }
 
@@ -148,7 +147,7 @@ fn set_normalized(engine: &mut Engine, args: &Args<'_>) -> Result<Value, Command
 fn nudge(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let address = address(engine, args)?;
     let steps = args.number("steps", -100.0, 100.0)?;
-    let current = f64::from(engine.session()?.get_param(address)?.value);
+    let current = f64::from(engine.value_before(address)?);
     let target = (current + steps * NUDGE).round().clamp(0.0, f64::from(RAW_MAX));
     apply(engine, address, target as u16)
 }
@@ -156,13 +155,18 @@ fn nudge(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
 fn set_choice(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let address = address(engine, args)?;
     let wanted = args.str("choice")?;
-    let def = blocks::by_id(address.block)
-        .and_then(|b| engine.defs.as_ref()?.effect(b.effect_type.into()))
+    engine.ensure_list(address)?;
+    let effect = blocks::by_id(address.block).map(|b| b.effect_type);
+    let listed = effect.and_then(|effect| engine.choices(effect, address.param));
+    // Failing the device's own list, a loaded definitions file may have one.
+    let from_file = effect
+        .and_then(|effect| engine.defs.as_ref()?.effect(effect.into()))
         .and_then(|e| e.param(address.param))
-        .ok_or_else(|| {
-            CommandError::NotFound("no definitions loaded for this parameter; run definitions.load_installed".into())
-        })?;
-    let index = def.strings.iter().position(|s| s.trim().eq_ignore_ascii_case(wanted.trim())).ok_or_else(|| {
+        .map(|def| &def.strings);
+    let choices = listed
+        .or(from_file)
+        .ok_or_else(|| CommandError::NotFound("the device has no list of choices for this parameter".into()))?;
+    let index = choices.iter().position(|s| s.trim().eq_ignore_ascii_case(wanted.trim())).ok_or_else(|| {
         CommandError::BadParam { name: "choice", problem: format!("{wanted:?} is not one of this parameter's choices") }
     })?;
     apply(engine, address, index as u16)
@@ -184,7 +188,8 @@ fn put(engine: &mut Engine, block: u16, (column, row): (usize, usize)) -> Result
 
 fn place_block(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let block = engine.block_arg(args)?;
-    put(engine, block, cell_arg(args)?)
+    let cell = cell_arg(args)?;
+    engine.recording_grid(|| format!("Place {}", blocks::label(block)), |engine| put(engine, block, cell))
 }
 
 /// A shunt ID no cell uses yet. Each shunt in a preset has its own; the
@@ -203,14 +208,22 @@ fn free_shunt(engine: &Engine, also_taken: &[u16]) -> Result<u16, CommandError> 
 
 fn place_shunt(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let shunt = free_shunt(engine, &[])?;
-    put(engine, shunt, cell_arg(args)?)
+    let cell = cell_arg(args)?;
+    engine.recording_grid(|| "Place Shunt".into(), |engine| put(engine, shunt, cell))
 }
 
 fn clear_cell(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
-    put(engine, blocks::EMPTY, cell_arg(args)?)
+    let cell = cell_arg(args)?;
+    let removed = blocks::label(engine.state.preset.grid.cell(cell.0, cell.1).block);
+    engine.recording_grid(|| format!("Remove {removed}"), |engine| put(engine, blocks::EMPTY, cell))
 }
 
 fn cable(engine: &mut Engine, args: &Args<'_>, connect: bool) -> Result<Value, CommandError> {
+    let label = || if connect { "Connect Cells" } else { "Disconnect Cells" }.to_owned();
+    engine.recording_grid(label, |engine| draw_cable(engine, args, connect))
+}
+
+fn draw_cable(engine: &mut Engine, args: &Args<'_>, connect: bool) -> Result<Value, CommandError> {
     let (column, row) = cell_arg(args)?;
     let from_row = args.int("from_row", grid::ROWS as u64 - 1)? as usize;
     if column == 0 {
@@ -233,6 +246,12 @@ fn send_place(engine: &mut Engine, block: u16, column: usize, row: usize) -> Res
 }
 
 fn move_block(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
+    let (column, row) = cell_arg(args)?;
+    let moved = blocks::label(engine.state.preset.grid.cell(column, row).block);
+    engine.recording_grid(|| format!("Move {moved}"), |engine| carry_block(engine, args))
+}
+
+fn carry_block(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let (column, row) = cell_arg(args)?;
     let to_column = args.int("to_column", grid::COLUMNS as u64 - 1)? as usize;
     let to_row = args.int("to_row", grid::ROWS as u64 - 1)? as usize;
@@ -320,12 +339,12 @@ fn occupied(engine: &Engine, args: &Args<'_>) -> Result<(usize, usize), CommandE
 fn connect_to_input(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let (column, row) = occupied(engine, args)?;
     // Start one column early so the first cable drawn is the one into column 1.
-    run_cable(engine, row, 0..=column)
+    engine.recording_grid(|| "Connect to Input".into(), |engine| run_cable(engine, row, 0..=column))
 }
 
 fn connect_to_output(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let (column, row) = occupied(engine, args)?;
-    run_cable(engine, row, column..=grid::COLUMNS - 1)
+    engine.recording_grid(|| "Connect to Output".into(), |engine| run_cable(engine, row, column..=grid::COLUMNS - 1))
 }
 
 fn connect_cells(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
@@ -484,7 +503,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Set Parameter by Choice",
         menu: "",
         shortcut: "",
-        doc: "Set an enumerated parameter by the text of the choice. Needs loaded definitions.",
+        doc: "Set an enumerated parameter by the text of the choice. The list of choices is read from the \
+              device if it has not been yet.",
         params: &[BLOCK, PARAM, req("choice", "string", "Choice text, e.g. an amp model name")],
         enabled: connected,
         run: set_choice,

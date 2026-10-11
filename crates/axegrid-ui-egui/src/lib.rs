@@ -1,8 +1,13 @@
-//! The egui shell. It reads [`axegrid_engine::State`] to draw and acts only
-//! by running commands: every menu item, button, knob and shortcut below
-//! ends in [`Shell::run`]. Menus and shortcuts are generated from the
-//! command registry, so registering a command with a menu path is all it
-//! takes to surface it.
+//! The egui shell. It draws from the [`axegrid_engine::View`] the engine
+//! last published and acts only by running commands: every menu item,
+//! button, knob and shortcut below ends in [`Shell::run`]. Menus and
+//! shortcuts are generated from the command registry, so registering a
+//! command with a menu path is all it takes to surface it.
+//!
+//! The engine, and with it the conversation with the device, lives on a
+//! thread of its own ([`axegrid_engine::Worker`]). A command is handed over
+//! and its outcome picked up on a later frame, so a unit that answers
+//! slowly, or not at all, never stops the window from drawing.
 //!
 //! The window is arranged the way hardware-editor users expect: preset and
 //! scenes across the top, the routing grid under it, the selected block's
@@ -12,10 +17,12 @@ pub mod knob;
 mod library;
 pub mod theme;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axegrid_engine::{registry, Engine, XyState};
+use axegrid_engine::{registry, CommandError, Engine, View, Worker, XyState};
 use axegrid_model::{blocks, grid};
 use egui::epaint::CubicBezierShape;
 use egui::{
@@ -38,8 +45,16 @@ const GRID_SCALE: (f32, f32) = (0.6, 2.2);
 const HANDLE: f32 = 8.0;
 /// Commands the shell asks about before running.
 const CONFIRMED: &[&str] = &["preset.store", "preset.copy", "cab.import"];
-/// Frames drawn before the unit is looked for, so the window is up first.
-const FRAMES_BEFORE_SEARCH: u8 = 2;
+/// How often the unit is listened to for what it sends by itself, with
+/// the tuner off and on.
+const POLL_PERIOD: Duration = Duration::from_millis(100);
+const TUNER_POLL_PERIOD: Duration = Duration::from_millis(40);
+/// Requests spent on choice lists per turn, so that an edit made meanwhile
+/// does not wait long behind them.
+const LIST_BUDGET: u64 = 8;
+/// A command that has kept the unit this long is shown as being waited for.
+const SLOW: Duration = Duration::from_millis(400);
+const SEARCHING: &str = "Looking for your Axe-Fx…";
 /// Width of one character of the small text in a control cell, roughly.
 const CHOICE_CHAR_WIDTH: f32 = 7.4;
 /// A fader's share of a cell's width.
@@ -68,6 +83,28 @@ const TUNER_SPAN: f32 = 63.0;
 
 /// A command the user asked for during this frame.
 type Action = (&'static str, Value);
+
+/// A command the engine has finished.
+struct Finished {
+    id: &'static str,
+    params: Value,
+    /// Housekeeping: only a failure reaches the status bar.
+    quiet: bool,
+    outcome: Result<Value, CommandError>,
+}
+
+/// What a command that sets one value is keyed by. A control being dragged
+/// issues such a command every frame; only the latest one waiting is worth
+/// sending once the unit has answered the one before.
+fn value_key(id: &str, params: &Value) -> Option<String> {
+    match id {
+        "param.set" => Some(format!("{}/{}", params["block"], params["param"])),
+        "tempo.set" => Some(TEMPO_KEY.to_owned()),
+        _ => None,
+    }
+}
+
+const TEMPO_KEY: &str = "tempo";
 
 /// One end of a cable being drawn: a cell, and whether it is its output side.
 type CableEnd = (usize, usize, bool);
@@ -160,9 +197,24 @@ impl ControlView {
     }
 }
 
-#[derive(Default)]
 pub struct Shell {
-    pub engine: Engine,
+    worker: Worker,
+    /// The engine's state after the last command it finished: what is drawn.
+    view: Arc<View>,
+    finished: Receiver<Finished>,
+    report: Sender<Finished>,
+    /// Values set and not yet answered by the unit, shown meanwhile so that
+    /// a control follows the pointer, by [`value_key`].
+    unconfirmed: HashMap<String, u64>,
+    /// Sets on their way to the unit, each with the latest one waiting behind it.
+    in_flight: HashMap<String, Option<Value>>,
+    polling: bool,
+    polled_at: Option<Instant>,
+    /// The unit is being looked for.
+    searching: bool,
+    reading_lists: bool,
+    /// The block whose choice lists could not be read, so as not to keep asking.
+    lists_failed: Option<u16>,
     status: String,
     inputs: Vec<String>,
     outputs: Vec<String>,
@@ -177,8 +229,6 @@ pub struct Shell {
     page_block: Option<u16>,
     /// A command that overwrites something, waiting for a yes.
     confirm: Option<Action>,
-    /// Frames drawn so far, until the unit has been looked for.
-    frames: u8,
     library: library::LibraryView,
     themed: bool,
     gesture: GridGesture,
@@ -237,65 +287,171 @@ fn lit_button(ui: &mut egui::Ui, text: &str, on: bool, lit: Color32) -> egui::Re
 }
 
 impl Shell {
-    pub fn new() -> Self {
-        let mut shell = Self::default();
-        shell.run("device.list_ports", &Value::Null);
-        // Definitions make choice lists available; their absence is fine.
-        let _ = shell.engine.run("definitions.load_installed", &Value::Null);
-        shell.status = "Ready".into();
-        shell
+    /// Starts the engine on its own thread and looks for the unit. `ctx` is
+    /// repainted whenever the engine has finished a command.
+    pub fn new(ctx: egui::Context) -> std::io::Result<Self> {
+        let worker = Worker::spawn(Engine::new(), move || ctx.request_repaint())?;
+        let (report, finished) = mpsc::channel();
+        let mut shell = Self {
+            view: worker.view(),
+            worker,
+            finished,
+            report,
+            unconfirmed: HashMap::new(),
+            in_flight: HashMap::new(),
+            polling: false,
+            polled_at: None,
+            searching: false,
+            reading_lists: false,
+            lists_failed: None,
+            status: String::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
+            input: String::new(),
+            output: String::new(),
+            goto: String::new(),
+            rename: None,
+            rename_needs_focus: false,
+            page: 0,
+            page_block: None,
+            confirm: None,
+            library: library::LibraryView::default(),
+            themed: false,
+            gesture: GridGesture::default(),
+            cpu_read_at: None,
+            beats_seen: 0,
+            beat_at: None,
+        };
+        shell.submit("device.list_ports", Value::Null, true);
+        shell.find_unit();
+        Ok(shell)
     }
 
-    /// Runs a command and shows its outcome in the status bar.
-    pub fn run(&mut self, id: &str, params: &Value) -> Option<Value> {
-        match self.engine.run(id, params) {
-            Ok(result) => {
-                if id == "device.list_ports" {
-                    let names =
-                        |key: &str| -> Vec<String> { serde_json::from_value(result[key].clone()).unwrap_or_default() };
-                    (self.inputs, self.outputs) = (names("inputs"), names("outputs"));
+    /// The thread the engine runs on, for callers that drive it too.
+    pub fn worker(&self) -> &Worker {
+        &self.worker
+    }
+
+    fn submit(&self, id: &'static str, params: Value, quiet: bool) {
+        let report = self.report.clone();
+        let asked = params.clone();
+        self.worker.run(id, params, move |outcome| {
+            // Nobody is listening once the window has closed.
+            let _ = report.send(Finished { id, params: asked, quiet, outcome });
+        });
+    }
+
+    /// Hands a command to the engine. Its outcome shows in the status bar
+    /// once the unit has answered.
+    pub fn run(&mut self, id: &'static str, params: Value) {
+        if let Some(key) = value_key(id, &params) {
+            if let Some(value) = params["value"].as_u64().or_else(|| params["bpm"].as_u64()) {
+                self.unconfirmed.insert(key.clone(), value);
+            }
+            if let Some(waiting) = self.in_flight.get_mut(&key) {
+                *waiting = Some(params);
+                return;
+            }
+            self.in_flight.insert(key, None);
+        }
+        self.submit(id, params, false);
+    }
+
+    /// Takes in the outcome of a command the engine has finished.
+    fn settle(&mut self, done: Finished) {
+        if let Some(key) = value_key(done.id, &done.params) {
+            match self.in_flight.remove(&key).flatten() {
+                Some(next) => {
+                    self.in_flight.insert(key, None);
+                    self.submit(done.id, next, false);
                 }
-                self.status = format!("{id}: ok");
-                Some(result)
+                // The unit has the last word on the value now.
+                None => drop(self.unconfirmed.remove(&key)),
             }
-            Err(error) => {
-                self.status = format!("{error}");
-                None
+        }
+        match (done.id, &done.outcome) {
+            ("device.poll", _) => self.polling = false,
+            ("device.connect_auto", _) => self.searching = false,
+            ("block.select", _) => self.lists_failed = None,
+            ("block.read_lists", outcome) => {
+                self.reading_lists = false;
+                if outcome.is_err() {
+                    self.lists_failed = self.view.state.selected_block;
+                }
             }
+            ("device.list_ports", Ok(result)) => {
+                let names =
+                    |key: &str| -> Vec<String> { serde_json::from_value(result[key].clone()).unwrap_or_default() };
+                (self.inputs, self.outputs) = (names("inputs"), names("outputs"));
+            }
+            ("preset.names" | "cab.names" | "preset.export_range", _) if done.quiet => {
+                return self.library_done(done.id, &done.params, &done.outcome);
+            }
+            _ => {}
+        }
+        let did = |result: &Value, key: &str| result[key].as_str().unwrap_or_default().to_owned();
+        match (&done.outcome, done.id) {
+            (Ok(found), "device.connect_auto") => {
+                self.status = format!("Connected on {}", found["port"].as_str().unwrap_or("a MIDI port"));
+            }
+            (Err(_), "device.connect_auto") => {
+                self.status = "No Axe-Fx found. Switch it on and press Find my Axe-Fx, or pick the ports.".into();
+            }
+            (Ok(result), "edit.undo") => self.status = format!("Undid {}", did(result, "undone")),
+            (Ok(result), "edit.redo") => self.status = format!("Redid {}", did(result, "redone")),
+            (Ok(_), id) if !done.quiet => self.status = format!("{id}: ok"),
+            (Err(error), _) => self.status = error.to_string(),
+            _ => {}
         }
     }
 
-    /// Runs a housekeeping command; only a failure reaches the status bar.
-    fn run_quietly(&mut self, id: &str) {
-        if let Err(error) = self.engine.run(id, &Value::Null) {
-            self.status = format!("{error}");
-        }
-    }
-
-    /// Keeps tuner, tempo lamp, load meter and front-panel changes current.
+    /// Takes in what the engine has finished, and keeps tuner, tempo lamp,
+    /// load meter, choice lists and front-panel changes current.
     fn housekeeping(&mut self, ctx: &egui::Context) {
-        if !self.engine.is_connected() {
+        // Outcomes before the view: the view is then at least as new as each of them.
+        while let Ok(done) = self.finished.try_recv() {
+            self.settle(done);
+        }
+        self.view = self.worker.view();
+        if self.worker.pending() > 0 {
+            // So that a long wait shows as one.
+            ctx.request_repaint_after(SLOW / 2);
+        }
+        if !self.view.connected {
             self.gesture = GridGesture::default();
             self.library.reset();
-            self.find_unit_once(ctx);
+            self.unconfirmed.clear();
+            self.in_flight.clear();
+            (self.polling, self.reading_lists) = (false, false);
             return;
         }
-        self.run_quietly("device.poll");
-        let beats = self.engine.state().beats;
+        // Housekeeping waits its turn behind whatever the user asked for.
+        let free = self.worker.pending() == 0;
+        let tuning = self.view.state.tuner_on;
+        let period = if tuning { TUNER_POLL_PERIOD } else { POLL_PERIOD };
+        if !self.polling && self.polled_at.is_none_or(|at| at.elapsed() >= period) {
+            (self.polling, self.polled_at) = (true, Some(Instant::now()));
+            self.submit("device.poll", Value::Null, true);
+        }
+        let beats = self.view.state.beats;
         if beats != std::mem::replace(&mut self.beats_seen, beats) {
             self.beat_at = Some(Instant::now());
         }
-        // Not while a control is being dragged: the request would stall it.
-        let idle = !ctx.input(|input| input.pointer.any_down());
-        if idle && self.cpu_read_at.is_none_or(|at| at.elapsed() >= CPU_PERIOD) && self.engine.is_connected() {
+        // Not while a control is being dragged: its edits would queue behind these.
+        let idle = free && !ctx.input(|input| input.pointer.any_down());
+        if idle && self.cpu_read_at.is_none_or(|at| at.elapsed() >= CPU_PERIOD) {
             self.cpu_read_at = Some(Instant::now());
-            self.run_quietly("device.cpu_load");
+            self.submit("device.cpu_load", Value::Null, true);
+        }
+        let lists_wanted = self.view.lists_missing > 0 && self.lists_failed != self.view.state.selected_block;
+        if idle && lists_wanted && !self.reading_lists {
+            self.reading_lists = true;
+            self.submit("block.read_lists", json!({ "budget": LIST_BUDGET }), true);
         }
         if idle {
             self.library_work();
         }
-        let tuning = self.engine.state().tuner_on;
-        let soon = if self.library.busy() {
+        let soon = if self.library.busy() || lists_wanted {
             5
         } else if tuning {
             40
@@ -305,28 +461,11 @@ impl Shell {
         ctx.request_repaint_after(Duration::from_millis(soon));
     }
 
-    /// Looks for the unit once, shortly after the window first appears.
-    fn find_unit_once(&mut self, ctx: &egui::Context) {
-        if self.frames > FRAMES_BEFORE_SEARCH {
-            return;
-        }
-        self.frames += 1;
-        ctx.request_repaint();
-        if self.frames == FRAMES_BEFORE_SEARCH {
-            self.status = "Looking for your Axe-Fx…".into();
-        } else if self.frames > FRAMES_BEFORE_SEARCH {
-            self.find_unit();
-        }
-    }
-
     /// Connects to the first unit that answers, USB before other MIDI ports.
     fn find_unit(&mut self) {
-        match self.engine.run("device.connect_auto", &Value::Null) {
-            Ok(found) => self.status = format!("Connected on {}", found["port"].as_str().unwrap_or("a MIDI port")),
-            Err(_) => {
-                self.status = "No Axe-Fx found. Switch it on and press Find my Axe-Fx, or pick the ports.".into();
-            }
-        }
+        self.searching = true;
+        self.status = SEARCHING.into();
+        self.submit("device.connect_auto", Value::Null, false);
     }
 
     fn shortcuts(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
@@ -335,7 +474,7 @@ impl Shell {
         }
         for command in registry().iter().filter(|c| !c.shortcut.is_empty()) {
             let Some(shortcut) = parse_shortcut(command.shortcut) else { continue };
-            let enabled = self.engine.disabled_reason(command.id).is_none();
+            let enabled = self.view.disabled_reason(command.id).is_none();
             if enabled && ctx.input_mut(|input| input.consume_shortcut(&shortcut)) {
                 actions.push((command.id, Value::Null));
             }
@@ -353,7 +492,14 @@ impl Shell {
             for (menu, items) in menus {
                 ui.menu_button(menu, |ui| {
                     for (item, command) in items {
-                        let reason = self.engine.disabled_reason(command.id);
+                        let reason = self.view.disabled_reason(command.id);
+                        // Undo and Redo say what they would act on.
+                        let acts_on = match command.id {
+                            "edit.undo" => self.view.next_undo.as_deref(),
+                            "edit.redo" => self.view.next_redo.as_deref(),
+                            _ => None,
+                        };
+                        let item = acts_on.map_or_else(|| item.to_owned(), |edit| format!("{item} {edit}"));
                         let button = egui::Button::new(item).shortcut_text(command.shortcut);
                         let response = ui.add_enabled(reason.is_none(), button);
                         if response
@@ -403,7 +549,8 @@ impl Shell {
     }
 
     fn preset_controls(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let state = self.engine.state();
+        let view = self.view.clone();
+        let state = &view.state;
         if ui.button("◀").on_hover_text("Previous preset").clicked() {
             actions.push(("preset.previous", Value::Null));
         }
@@ -460,12 +607,26 @@ impl Shell {
             if presets.on_hover_text("All presets: browse, copy, export, import, back up").clicked() {
                 self.library.presets_open = !self.library.presets_open;
             }
+            ui.separator();
+            // Laid out from the right, so Redo comes first.
+            for (name, command, edit) in
+                [("Redo", "edit.redo", &view.next_redo), ("Undo", "edit.undo", &view.next_undo)]
+            {
+                let hint = edit
+                    .as_ref()
+                    .map_or_else(|| format!("Nothing to {}", name.to_lowercase()), |e| format!("{name} {e}"));
+                let button = ui.add_enabled(edit.is_some(), egui::Button::new(name));
+                if button.on_hover_text(&hint).on_disabled_hover_text(hint).clicked() {
+                    actions.push((command, Value::Null));
+                }
+            }
         });
     }
 
     /// Second row of the header: scenes, tuner, tempo and the load meter.
     fn performance_controls(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let state = self.engine.state();
+        let view = self.view.clone();
+        let state = &view.state;
         ui.label(RichText::new("SCENE").small().color(theme::TEXT_DIM));
         for scene in 0..8u8 {
             if lit_button(ui, &(scene + 1).to_string(), state.preset.scene == scene, theme::ACCENT).clicked() {
@@ -485,6 +646,8 @@ impl Shell {
             actions.push(("tempo.tap", Value::Null));
         }
         if let Some(tempo) = state.tempo {
+            // While it is dragged the box shows what was asked for, not the unit's answer so far.
+            let tempo = self.unconfirmed.get(TEMPO_KEY).map_or(tempo, |asked| *asked as u16);
             let mut bpm = tempo;
             let (slowest, fastest) = axegrid_engine::TEMPO_RANGE;
             let field =
@@ -508,22 +671,27 @@ impl Shell {
     fn header(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         ui.horizontal(|ui| {
             ui.label(RichText::new("AXE·GRID").size(18.0).strong().color(theme::ACCENT));
-            let state = self.engine.state();
+            let view = self.view.clone();
+            let state = &view.state;
             let (lamp, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
-            let lit = if self.engine.is_connected() { theme::LAMP_ON } else { theme::LAMP_OFF };
+            let lit = if view.connected { theme::LAMP_ON } else { theme::LAMP_OFF };
             ui.painter().circle_filled(lamp.center(), 4.5, lit);
             let model = state.model.map_or("offline", |m| m.name());
             let firmware = state.firmware.map(|(a, b)| format!("  fw {a}.{b:02}")).unwrap_or_default();
             let tag = if state.simulated { "  simulated" } else { "" };
             ui.label(RichText::new(format!("{model}{firmware}{tag}")).small().color(theme::TEXT_DIM));
             ui.separator();
-            if self.engine.is_connected() {
+            if view.connected {
                 self.preset_controls(ui, actions);
             } else {
-                self.connection_controls(ui, actions);
+                if self.searching {
+                    ui.spinner();
+                }
+                // One search at a time; what is clicked meanwhile would only queue behind it.
+                ui.add_enabled_ui(!self.searching, |ui| self.connection_controls(ui, actions));
             }
         });
-        if self.engine.is_connected() {
+        if self.view.connected {
             ui.add_space(4.0);
             ui.horizontal(|ui| self.performance_controls(ui, actions));
         }
@@ -531,7 +699,7 @@ impl Shell {
 
     /// The right-click menu of one grid cell.
     fn cell_menu(&self, ui: &mut egui::Ui, column: usize, row: usize, actions: &mut Vec<Action>) {
-        let view = &self.engine.state().preset;
+        let view = &self.view.state.preset;
         let id = view.grid.cell(column, row).block;
         let cell = json!({ "column": column, "row": row });
         let with_cell = |extra: Value| {
@@ -616,7 +784,7 @@ impl Shell {
         // An input end goes to the input bar, an output end to the output bar.
         let takes = pending.filter(|end| end.2 == (rail == Rail::Output));
         let response = ui.interact(rect, ui.id().with(("rail", block)), Sense::click());
-        let selected = self.engine.state().selected_block == Some(block);
+        let selected = self.view.state.selected_block == Some(block);
         let fill = if selected || response.hovered() { theme::RAISED_HOT } else { theme::RAISED };
         let painter = ui.painter();
         painter.rect_filled(rect, theme::RADIUS, fill);
@@ -648,7 +816,7 @@ impl Shell {
 
     /// Draws the grid and returns what is still in progress on it.
     fn grid(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> GridGesture {
-        let state = self.engine.state();
+        let state = &self.view.state;
         let view = &state.preset;
         let natural = vec2(
             2.0 * (RAIL + TILE_GAP.x) + grid::COLUMNS as f32 * (TILE.x + TILE_GAP.x) - TILE_GAP.x,
@@ -1103,9 +1271,10 @@ impl Shell {
         if self.page_block != Some(block) {
             (self.page_block, self.page) = (Some(block), 0);
         }
-        let state = self.engine.state();
-        let live = state.preset.states.iter().find(|s| s.block == block);
-        let editor = self.engine.editor();
+        let view = self.view.clone();
+        let live = view.state.preset.states.iter().find(|s| s.block == block);
+        let editor = &view.editor;
+        let unconfirmed = &self.unconfirmed;
         let empty = Vec::new();
         let pages = editor["pages"].as_array().unwrap_or(&empty);
         let fixed = blocks::is_fixed(block);
@@ -1184,7 +1353,12 @@ impl Shell {
                         for row in all_rows.iter().filter(|row| (row["mixer"] == true) == mixer) {
                             ui.horizontal(|ui| {
                                 for control in row["controls"].as_array().unwrap_or(&empty) {
-                                    Self::control(ui, block, cell, &ControlView::from_json(control), actions);
+                                    let mut control = ControlView::from_json(control);
+                                    // What was just set, until the unit has answered.
+                                    if let Some(asked) = unconfirmed.get(&format!("{block}/{}", control.id)) {
+                                        control.raw = *asked as u32;
+                                    }
+                                    Self::control(ui, block, cell, &control, actions);
                                 }
                             });
                         }
@@ -1216,7 +1390,7 @@ impl Shell {
     /// Height at which the current page shows all its controls at full
     /// size, kept to a share of the window so the grid stays usable.
     fn editor_height(&self, ctx: &egui::Context) -> f32 {
-        let editor = self.engine.editor();
+        let editor = &self.view.editor;
         let pages = editor["pages"].as_array().map(Vec::as_slice).unwrap_or_default();
         let page = pages.get(self.page.min(pages.len().saturating_sub(1)));
         let rows = page.map_or(1.0, |page| PageShape::of(page).rows());
@@ -1226,7 +1400,7 @@ impl Shell {
 
     /// The tuner read-out, shown while the unit's tuner is on.
     fn tuner_window(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
-        let tuner = self.engine.inspect()["tuner"].clone();
+        let tuner = &self.view.tuner;
         let reading = &tuner["reading"];
         egui::Window::new("Tuner").collapsible(false).resizable(false).anchor(Align2::CENTER_TOP, [0.0, 110.0]).show(
             ctx,
@@ -1268,7 +1442,7 @@ impl Shell {
     /// Asks before a command from [`CONFIRMED`] goes ahead.
     fn confirm_dialog(&mut self, ctx: &egui::Context) {
         let Some((id, params)) = self.confirm.clone() else { return };
-        let (title, body, go_ahead) = library::confirmation(id, &params, self.engine.state().preset.number);
+        let (title, body, go_ahead) = library::confirmation(id, &params, self.view.state.preset.number);
         let mut decision = None;
         egui::Window::new(title).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(
             ctx,
@@ -1298,7 +1472,7 @@ impl Shell {
         if let Some(go) = decision {
             self.confirm = None;
             if go {
-                self.run(id, &params);
+                self.run(id, params);
             }
         }
     }
@@ -1319,10 +1493,16 @@ impl Shell {
         egui::Panel::top("menu").frame(bar).show(ui, |ui| self.menu_bar(ui, &mut actions));
         let header = egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 9));
         egui::Panel::top("header").frame(header).show(ui, |ui| self.header(ui, &mut actions));
-        egui::Panel::bottom("status")
-            .frame(bar)
-            .show(ui, |ui| ui.label(RichText::new(&self.status).small().color(theme::TEXT_DIM)));
-        if let Some(block) = self.engine.state().selected_block {
+        egui::Panel::bottom("status").frame(bar).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if self.worker.waiting_for().is_some_and(|waited| waited >= SLOW) {
+                    ui.spinner();
+                    ui.label(RichText::new("Waiting for the unit…").small().color(theme::TEXT));
+                }
+                ui.label(RichText::new(&self.status).small().color(theme::TEXT_DIM));
+            });
+        });
+        if let Some(block) = self.view.state.selected_block {
             let editor = egui::Frame::new().fill(theme::PANEL).inner_margin(egui::Margin::symmetric(12, 10));
             egui::Panel::bottom("block-editor")
                 .frame(editor)
@@ -1332,20 +1512,21 @@ impl Shell {
         }
         let stage = egui::Frame::new().fill(theme::BACKDROP).inner_margin(egui::Margin::same(16));
         egui::CentralPanel::default().frame(stage).show(ui, |ui| {
-            if self.engine.is_connected() {
+            if self.view.connected {
                 self.gesture = self.grid(ui, &mut actions);
             } else {
                 ui.centered_and_justified(|ui| {
                     let hint = "Press Find my Axe-Fx, or choose the MIDI ports your unit is on and press Connect.\n\
                                 You can also try the simulator.";
+                    let hint = if self.searching { SEARCHING } else { hint };
                     ui.label(RichText::new(hint).size(15.0).color(theme::TEXT_DIM));
                 });
             }
         });
-        if self.engine.state().tuner_on {
+        if self.view.state.tuner_on {
             self.tuner_window(ctx, &mut actions);
         }
-        if self.engine.is_connected() {
+        if self.view.connected {
             if self.library.presets_open {
                 self.preset_manager(ctx, &mut actions);
             }
@@ -1359,7 +1540,7 @@ impl Shell {
             } else if id == "device.connect_auto" {
                 self.find_unit();
             } else {
-                self.run(id, &params);
+                self.run(id, params);
             }
         }
         self.confirm_dialog(ctx);
@@ -1396,6 +1577,16 @@ mod tests {
                 assert!(axegrid_engine::find(literal).is_some(), "the shell names an unknown command {literal:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_dragged_control_is_keyed_by_what_it_sets() {
+        let drive = json!({ "block": 106, "param": 1, "value": 5 });
+        assert_eq!(value_key("param.set", &drive).as_deref(), Some("106/1"));
+        assert_eq!(value_key("tempo.set", &json!({ "bpm": 120 })).as_deref(), Some(TEMPO_KEY));
+        // Anything else is sent as often as it is asked for.
+        assert_eq!(value_key("param.set_displayed", &drive), None);
+        assert_eq!(value_key("grid.connect", &json!({ "column": 1, "row": 0, "from_row": 0 })), None);
     }
 
     #[test]

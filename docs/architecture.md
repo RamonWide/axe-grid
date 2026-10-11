@@ -14,7 +14,7 @@
                                    command `run` fn  -->  Session  -->  Transport  -->  device
                                            |
                                            v
-                                         State   (read by the UI and by `state.inspect`)
+                                         State   (shown by the UI, returned by `state.inspect`)
 ```
 
 `axegrid_engine::registry()` is the complete list of things the program can
@@ -27,28 +27,81 @@ do. Front ends differ only in how they pick a command and show its result.
 | L0 | `axegrid-sysex` | `Frame` (envelope, checksum), 7-bit codecs, `Request::to_frame`, `Reply::parse` |
 | L1 | `axegrid-model` | Block and parameter ID tables, `Grid`, `Definitions` (cache file parser and writer) |
 | L2 | `axegrid-device` | `Transport` trait, `Session` (send, wait for the matching reply, queue unsolicited messages), `MidiTransport`, `SimDevice` |
-| L3 | `axegrid-engine` | `Engine`, `State`, `CommandSpec`, the registry |
+| L3 | `axegrid-engine` | `Engine`, `State`, `CommandSpec`, the registry; `Worker` and `View` for front ends with a window |
 | L4 | `axegrid-automation` | `dispatch` (control methods), TCP control server, `BridgeClient`, MCP |
 | L4 | `axegrid-ui-egui` | `Shell`: draws `State`, collects the frame's actions, runs them as commands |
 
 ## The UI seam
 
-`Shell::ui` builds a list of `(command id, params)` while drawing and runs
-them after the frame is laid out. Menus and keyboard shortcuts are generated
-from the registry. The shell holds only view state: the MIDI port pick lists,
-the rename text box, the status line.
+`Shell::ui` builds a list of `(command id, params)` while drawing and hands
+them over after the frame is laid out. Menus and keyboard shortcuts are
+generated from the registry. The shell holds only view state: the MIDI port
+pick lists, the rename text box, the status line.
 
-Commands run on the UI thread. A device that does not answer blocks the
-window for the session timeout (1.5 s); moving the session to a worker is
-listed in `docs/gaps.md`.
+## The engine's own thread
+
+Talking to a device means waiting for it: up to the session timeout (1.5 s)
+for each request it does not answer. So the window does not own the engine.
+`axegrid_engine::Worker` does, on a thread named `device-session`:
+
+```text
+ UI thread                                   device-session thread
+ ---------                                   ---------------------
+ Shell::run(id, params)  -- job -->  queue -->  Engine::run(id, params)
+                                                 publish View (a copy of State,
+                                                 the editor pages, what is enabled)
+ Shell::settle(outcome)  <-- report --           wake the window
+ draws from Worker::view()
+```
+
+- Jobs run one at a time, in the order they were handed over. The control
+  channel's requests join the same queue.
+- After every job the worker publishes a `View`. The window draws from the
+  latest one and never touches the engine, so no frame waits for the device.
+- A job's report runs after its view is published: whoever hears that a
+  command finished already sees what it did.
+- While a control is dragged it issues a set every frame. The shell sends one
+  at a time for each parameter and keeps only the newest one waiting, and
+  shows the value asked for until the device has answered.
+- Housekeeping (listening for the tuner and tempo, the load meter, names for
+  the managers, choice lists) is only handed over when nothing else is
+  waiting, so it never delays an edit by more than one short job.
+
+`Headless` (the CLI, MCP without a window) still owns an `Engine` directly
+and runs commands where it is called.
+
+## Undo history
+
+The device holds the truth, so the history does not copy presets. Each
+entry records what one edit changed on the device: a parameter's raw value
+before and after, an X/Y state, the preset name, or the grid before and
+after. Undo sends the old value back; for the grid it places blocks and
+draws cables until the device's grid matches the remembered one, lifting
+shunts first so that no shunt ID is ever in two cells. Edits to one
+parameter that follow each other within 0.6 s are one entry. The history
+belongs to the edit buffer: loading a preset, importing one or losing the
+device empties it. Commands that edit the preset record through
+`Engine::record_param`, `record_xy`, `record_rename` and `recording_grid`
+(`history_cmds.rs`).
+
+## Choice lists
+
+The names in a list control (amp models, effect types, cabs) are read from
+the device and kept until it disconnects, keyed by effect type and parameter
+so that two instances of a block share them (`lists_cmds.rs`). A parameter
+that reports a highest choice index has a list of its own, read with one
+request (function `28`). The cab block's cab picker has none; its value is a
+position in the device's cab list, which is read name by name (function
+`12`). `block.read_lists` takes a budget of requests, so the window can read
+a little at a time between the user's edits.
 
 ## The desktop control server
 
 `axegrid --control <port> --control-token-file <path>` binds 127.0.0.1,
 writes a fresh 256-bit token to the path, and accepts newline-delimited JSON.
-Authenticated requests are queued to the UI thread and executed with the same
-`dispatch` the headless CLI uses, so an agent acts on the very state the user
-is looking at.
+Authenticated requests are handed to the engine's thread and executed with
+the same `dispatch` the headless CLI uses, so an agent acts on the very state
+the user is looking at, in turn with the user's own clicks.
 
 ## Device session
 
@@ -62,4 +115,5 @@ tempo, front-panel notifications) is queued as unsolicited.
 
 `SimDevice` implements `Transport` in memory with three small presets. It
 exists so that every command has an end-to-end test and so the app can be
-tried without hardware. It is not a model of real parameter behaviour.
+tried without hardware. It is not a model of real parameter behaviour: every
+list has the same three choices, for one.

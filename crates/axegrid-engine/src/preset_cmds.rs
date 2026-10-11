@@ -1,6 +1,6 @@
 //! Presets and scenes.
 
-use axegrid_sysex::{Reply, Request};
+use axegrid_sysex::Request;
 use serde_json::{json, Value};
 
 use crate::command::{connected, opt, req, Args, CommandError, CommandSpec};
@@ -16,6 +16,8 @@ fn summary(engine: &Engine) -> Value {
 
 fn select_number(engine: &mut Engine, number: u16) -> Result<Value, CommandError> {
     engine.session()?.request(&Request::SelectPreset(number))?;
+    // Loading a preset, even the current one again, discards its edits.
+    engine.history.clear();
     engine.refresh_preset()?;
     Ok(summary(engine))
 }
@@ -37,8 +39,10 @@ fn rename(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     if name.is_empty() || name.chars().count() > axegrid_sysex::message::PRESET_NAME_LEN {
         return Err(CommandError::BadParam { name: "name", problem: "must be 1 to 32 characters".into() });
     }
+    let before = engine.state.preset.name.clone();
     engine.session()?.request(&Request::SetPresetName(name.to_owned()))?;
     engine.refresh_preset()?;
+    engine.record_rename(before);
     Ok(summary(engine))
 }
 
@@ -54,11 +58,7 @@ fn store(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
 }
 
 fn set_scene(engine: &mut Engine, index: u8) -> Result<Value, CommandError> {
-    if let Reply::Scene(scene) = engine.session()?.request(&Request::Scene(Some(index)))? {
-        engine.state.preset.scene = scene;
-    }
-    // Scenes carry their own bypass and X/Y states.
-    engine.refresh_preset()?;
+    engine.go_to_scene(index)?;
     Ok(summary(engine))
 }
 

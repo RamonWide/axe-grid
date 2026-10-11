@@ -15,11 +15,15 @@ struct App {
 
 impl eframe::App for App {
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Control requests run here, on the UI thread, exactly like clicks.
+        // Control requests join the same queue as clicks: the engine's thread
+        // runs them in turn and the window never waits for one.
         if let Some(requests) = &self.control {
             while let Ok(pending) = requests.try_recv() {
-                let outcome = axegrid_automation::dispatch(&mut self.shell.engine, &pending.method, &pending.params);
-                pending.respond(outcome);
+                let (method, params) = (pending.method.clone(), pending.params.clone());
+                self.shell.worker().call(
+                    move |engine| axegrid_automation::dispatch(engine, &method, &params),
+                    move |outcome| pending.respond(outcome),
+                );
             }
         }
     }
@@ -84,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         native,
         Box::new(move |cc| {
             let control = start_control(&options, cc.egui_ctx.clone())?;
-            Ok(Box::new(App { shell: Shell::new(), control }))
+            Ok(Box::new(App { shell: Shell::new(cc.egui_ctx.clone())?, control }))
         }),
     )?;
     Ok(())

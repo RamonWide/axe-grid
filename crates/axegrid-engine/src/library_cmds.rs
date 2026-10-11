@@ -131,6 +131,8 @@ fn preset_import(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandE
     let dump = load_dump(Path::new(args.str("path")?), DumpKind::Preset)?;
     let model = engine.session()?.model();
     engine.session()?.send_dump(&dump.frames(model, 0))?;
+    // The edit buffer holds another preset now.
+    engine.history.clear();
     engine.refresh_preset()?;
     Ok(json!({ "name": dump.name(), "preset": engine.inspect()["preset"] }))
 }
@@ -145,6 +147,7 @@ fn preset_copy(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandErr
     engine.session()?.request(&Request::SelectPreset(from))?;
     engine.session()?.request(&Request::StorePreset(to))?;
     engine.session()?.request(&Request::SelectPreset(to))?;
+    engine.history.clear();
     engine.refresh_preset()?;
     let name = engine.state.preset.name.clone();
     engine.state.preset_names.insert(to, name.clone());
@@ -162,7 +165,7 @@ fn cab_names(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError
         let Some(index) = slots.list_index(cab) else { break };
         let name = engine.session()?.cab_name(index)?;
         read.push(json!({ "cab": cab, "name": name, "empty": name == EMPTY_CAB }));
-        engine.state.cab_names.insert(cab, name);
+        engine.note_cab(index, name);
     }
     Ok(json!({ "names": read, "known": engine.state.cab_names.len(), "slots": slots.user }))
 }
@@ -184,8 +187,8 @@ fn cab_import(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandErro
     // Read the name back, so the list shows what the device now holds.
     let index = engine.cab_slots()?.list_index(cab);
     let stored = index.map(|index| engine.session()?.cab_name(index).map_err(CommandError::from)).transpose()?;
-    if let Some(name) = &stored {
-        engine.state.cab_names.insert(cab, name.clone());
+    if let (Some(index), Some(name)) = (index, &stored) {
+        engine.note_cab(index, name.clone());
     }
     Ok(json!({ "cab": cab, "name": dump.name(), "stored_as": stored }))
 }

@@ -10,6 +10,15 @@ listed under "Changed".
 
 ### Added
 
+- **Undo and redo** (Ctrl+Z and Ctrl+Y, the Undo and Redo buttons, the Edit menu) for parameter
+  changes, bypass, X/Y, the preset name and everything done on the grid: placing, moving and
+  removing blocks, and cables. Turning one knob is one step. An edit made in another scene, or on a
+  block's other X/Y set, switches back to it first. Loading a preset empties the history; saving
+  does not. Commands `edit.undo`, `edit.redo` and `edit.history`.
+- **Lists are read from the unit.** The names in every list (amp models, effect types, cabs and
+  the rest) now come from your own unit when you open a block, and match its firmware. Axe-Grid
+  no longer needs the original editor to have been installed. Command `block.read_lists`;
+  `param.set_choice` reads the list it needs by itself.
 - **Preset manager** (the Presets button): the names of every preset slot, read without loading
   them, with a search box; load, copy to another slot, save the current sound to another slot,
   export to a `.syx` file, import a file into the edit buffer, and back up every preset to a
@@ -41,6 +50,14 @@ listed under "Changed".
 
 ### Changed
 
+- **The window no longer waits for the unit.** The conversation with the unit runs on its own
+  thread, so a unit that answers slowly, or not at all, cannot freeze the window. The status bar
+  shows when the unit is being waited for. Dragging a knob stays smooth on a slow connection: the
+  knob follows the pointer and the unit is sent the latest position as fast as it answers.
+- The app starts at once and looks for the unit in the background.
+- Axe-Grid no longer loads the original editor's definition file when it starts.
+  `definitions.load` and `definitions.load_installed` remain for those who want them.
+- `app.inspect` and `state.inspect` also report `history` and `lists`.
 - Faders are twice as tall, and a fader's cap now follows the pointer over the length of its
   track.
 

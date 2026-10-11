@@ -6,13 +6,24 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::time::Duration;
 
-use axegrid_model::{blocks, grid, layouts, params};
+use axegrid_model::{blocks, defs, grid, layouts, params};
 use axegrid_sysex::codec::{put_uint, Reader};
 use axegrid_sysex::{function, Dump, DumpKind, Frame, Model};
 
 use crate::session::Transport;
 
 const STATUS_INVALID_BLOCK: u8 = 1;
+/// What a unit answers when asked for the choices of a parameter that has none.
+const STATUS_NOT_A_LIST: u8 = 27;
+/// The choices every list of the simulator offers.
+const SIM_CHOICES: [&str; 3] = ["FIRST", "SECOND", "THIRD"];
+/// Effect type of the cab block, and its parameters that pick a cab from the cab list.
+const SIM_CAB: u8 = 6;
+const SIM_CAB_PICKERS: [&str; 2] = ["CABINET_TYPEL", "CABINET_TYPER"];
+/// Entries after the user cabs in the cab list.
+const SIM_SPARE_CABS: u16 = 4;
+/// Type word of a continuous parameter.
+const SIM_TYPE_CONTINUOUS: u32 = 0x32;
 /// Effect type of the controllers block, and the tempo a fresh preset has.
 const SIM_CONTROLLERS: u8 = 37;
 const SIM_TEMPO: u16 = 120;
@@ -224,6 +235,8 @@ impl SimDevice {
     fn cab_name(&self, index: u16) -> String {
         match index.checked_sub(SIM_FACTORY_CABS) {
             None => format!("Sim Factory {}", index + 1),
+            // The entries after the user cabs have blank names.
+            Some(slot) if slot >= SIM_USER_CABS => String::new(),
             Some(slot) => self.cabs.get(&slot).map_or_else(|| "EMPTY".to_owned(), |words| cab_name(words)),
         }
     }
@@ -245,14 +258,31 @@ impl SimDevice {
         self.values.get(&(self.current, block, param)).copied().unwrap_or(default)
     }
 
+    /// Whether the parameter picks a cab by its position in the cab list.
+    fn picks_cab(block: u16, param: u16) -> bool {
+        let cab = blocks::by_id(block).is_some_and(|b| b.effect_type == SIM_CAB);
+        cab && SIM_CAB_PICKERS.iter().any(|name| params::id(SIM_CAB, name) == Some(param))
+    }
+
+    /// Whether the parameter is a list of [`SIM_CHOICES`].
+    fn is_list(block: u16, param: u16) -> bool {
+        let stepped = blocks::by_id(block).is_some_and(|b| layouts::is_stepped(b.effect_type, param));
+        stepped && !Self::picks_cab(block, param)
+    }
+
     fn param_payload(&self, block: u16, param: u16) -> Vec<u8> {
         let raw = self.value(block, param);
         let mut payload = Vec::new();
         put_uint(&mut payload, block.into(), 2);
         put_uint(&mut payload, param.into(), 2);
         put_uint(&mut payload, raw.into(), 3);
-        payload.extend_from_slice(&[0; 5]);
-        let text = format!("{:.2}", f32::from(raw) / SIM_DISPLAY_SCALE);
+        payload.extend_from_slice(&[0; 3]);
+        // A list reports its highest choice index; anything else reports 0.
+        let highest = if Self::is_list(block, param) { SIM_CHOICES.len() as u32 - 1 } else { 0 };
+        put_uint(&mut payload, highest, 2);
+        let listed = SIM_CHOICES.get(usize::from(raw)).filter(|_| highest > 0);
+        let text =
+            listed.map_or_else(|| format!("{:.2}", f32::from(raw) / SIM_DISPLAY_SCALE), |name| (*name).to_owned());
         payload.extend_from_slice(text.as_bytes());
         payload.push(0);
         payload
@@ -440,6 +470,36 @@ impl SimDevice {
                     self.reply(PARAM_DUMP, payload);
                 }
                 self.reply(LIST_END, vec![]);
+            }
+            PARAM_STRINGS | PARAM_INFO => {
+                let (block, param) = (r.u16(2)?, r.u16(2)?);
+                // Like a unit, this answers for any block type, placed or not.
+                if blocks::by_id(block).is_none() {
+                    self.status(frame.function, STATUS_INVALID_BLOCK);
+                    return Some(());
+                }
+                let list = Self::is_list(block, param);
+                if frame.function == PARAM_STRINGS {
+                    if list {
+                        let text: Vec<u8> = SIM_CHOICES.iter().flat_map(|name| name.bytes().chain([0])).collect();
+                        self.reply(PARAM_STRINGS, text);
+                    } else {
+                        self.status(PARAM_STRINGS, STATUS_NOT_A_LIST);
+                    }
+                    return Some(());
+                }
+                let cabs = SIM_FACTORY_CABS + SIM_USER_CABS + SIM_SPARE_CABS;
+                let (type_word, highest, step) = match (list, Self::picks_cab(block, param)) {
+                    (true, _) => (defs::TYPE_ENUM, SIM_CHOICES.len() as f32 - 1.0, 0.0),
+                    (_, true) => (defs::TYPE_CAB_LIST, f32::from(cabs - 1), 1.0),
+                    _ => (SIM_TYPE_CONTINUOUS, 10.0, 0.001),
+                };
+                let mut payload = Vec::new();
+                put_uint(&mut payload, type_word, 5);
+                for value in [0.0, highest, 1.0, step] {
+                    axegrid_sysex::codec::put_f32(&mut payload, value);
+                }
+                self.reply(PARAM_INFO, payload);
             }
             BLOCK_XY => {
                 let (block, y, set) = (r.u16(2)?, r.u8()?, r.u8()?);

@@ -9,7 +9,7 @@
 //!
 //! The server only listens on 127.0.0.1 and every connection must
 //! authenticate first. Requests are handed to the owner of the engine through
-//! a channel, so the desktop app runs them on its UI thread like any click.
+//! a channel, so the desktop app runs them in turn with the user's clicks.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -211,7 +211,7 @@ mod tests {
     use axegrid_engine::Engine;
 
     /// A server whose requests are executed by an engine on another thread,
-    /// the way the desktop app does on its UI thread.
+    /// the way the desktop app does on its engine thread.
     fn serve(token: &str) -> SocketAddr {
         let (address, requests) = start_server(0, token.to_owned(), || {}).unwrap();
         std::thread::spawn(move || {

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use axegrid_model::Grid;
 use axegrid_sysex::{
-    function, BlockState, Dump, DumpError, DumpKind, Frame, Model, ParamAddress, ParamValue, Reply, Request,
+    function, BlockState, Dump, DumpError, DumpKind, Frame, Model, ParamAddress, ParamInfo, ParamValue, Reply, Request,
 };
 
 /// A bidirectional stream of complete SysEx messages.
@@ -86,6 +86,9 @@ impl<T: Transport> Session<T> {
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_millis(1500);
     /// Unrequested messages kept until someone drains them.
     const MAX_UNSOLICITED: usize = 256;
+    /// How long a list of choices may take to arrive. It is one message of
+    /// several kilobytes, which a 31.25 kbaud DIN link carries in seconds.
+    const LIST_TIMEOUT: Duration = Duration::from_secs(6);
 
     /// Probes for a device and adopts whichever model answers.
     pub fn connect(mut transport: T) -> Result<Self, SessionError> {
@@ -149,9 +152,14 @@ impl<T: Transport> Session<T> {
     /// Sends a request and waits for the reply that completes it. Items of a
     /// multi-message list are returned together with the terminating reply.
     fn exchange(&mut self, request: &Request) -> Result<(Vec<Reply>, Reply), SessionError> {
+        self.exchange_within(request, self.timeout)
+    }
+
+    /// [`Self::exchange`] with its own limit on how long the device may stay silent.
+    fn exchange_within(&mut self, request: &Request, timeout: Duration) -> Result<(Vec<Reply>, Reply), SessionError> {
         let function = request.function();
         self.transport.send(&request.to_frame(self.model.byte()).to_bytes())?;
-        let mut deadline = Instant::now() + self.timeout;
+        let mut deadline = Instant::now() + timeout;
         let mut items = Vec::new();
         let dump = match request {
             Request::PresetDump(_) => Some(DumpKind::Preset),
@@ -166,7 +174,7 @@ impl<T: Transport> Session<T> {
             // A long list over a 31.25 kbaud DIN link takes seconds; the
             // timeout bounds silence, not the whole exchange.
             if !items.is_empty() {
-                deadline = Instant::now() + self.timeout;
+                deadline = Instant::now() + timeout;
             }
             // Corrupt or foreign messages are dropped, as the original does.
             let Ok((_, reply)) = Reply::parse(&bytes) else { continue };
@@ -276,6 +284,23 @@ impl<T: Transport> Session<T> {
                 _ => None,
             })
             .collect())
+    }
+
+    /// The choices of an enumerated parameter, in the order of its raw
+    /// values. The device refuses for a parameter that is not a list.
+    pub fn param_strings(&mut self, address: ParamAddress) -> Result<Vec<String>, SessionError> {
+        match self.exchange_within(&Request::ParamStrings(address), Self::LIST_TIMEOUT)?.1 {
+            Reply::ParamStrings(strings) => Ok(strings),
+            _ => Err(SessionError::UnexpectedReply { function: function::PARAM_STRINGS }),
+        }
+    }
+
+    /// Type and range of a parameter.
+    pub fn param_info(&mut self, address: ParamAddress) -> Result<ParamInfo, SessionError> {
+        match self.request(&Request::ParamInfo(address))? {
+            Reply::ParamInfo(info) => Ok(info),
+            _ => Err(SessionError::UnexpectedReply { function: function::PARAM_INFO }),
+        }
     }
 
     /// Name of a stored preset, without loading it.

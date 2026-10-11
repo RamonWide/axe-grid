@@ -84,6 +84,7 @@ fn disconnect(engine: &mut Engine, _: &Args<'_>) -> Result<Value, CommandError> 
         session.disconnect();
     }
     engine.state = crate::State::default();
+    engine.forget_device();
     Ok(Value::Null)
 }
 

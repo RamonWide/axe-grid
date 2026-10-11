@@ -156,7 +156,7 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
     </td>
     <td width="33%" valign="top">
       <h4>🎚️ Blocks</h4>
-      Pages for 38 block types · bypass and X/Y · knobs, faders, switches and lists with the unit's display text · amp and cab type lists · curves for the EQs, filter, compressor, gates and more · looper and Tone Match buttons.
+      Pages for 38 block types · bypass and X/Y · knobs, faders, switches and lists with the unit's display text · amp, cab and effect type lists read from your unit · undo and redo · curves for the EQs, filter, compressor, gates and more · looper and Tone Match buttons.
     </td>
   </tr>
   <tr>
@@ -183,12 +183,12 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
   </tr>
 </table>
 
-Not there yet: modifiers, scene and block copy/paste, bank files, meters, global settings and
-undo. The full list, ranked, is in [ROADMAP.md](ROADMAP.md).
+Not there yet: modifiers, scene and block copy/paste, bank files, meters and global settings.
+The full list, ranked, is in [ROADMAP.md](ROADMAP.md).
 
 ## Built for agents
 
-Every menu item, button, knob and shortcut runs a command from one registry of 62 commands
+Every menu item, button, knob and shortcut runs a command from one registry of 66 commands
 ([`docs/commands.md`](docs/commands.md)). The window, the CLI, the JSON control channel and the MCP
 server all call the same commands, so anything you can click, a script or an AI agent can do too.
 
@@ -215,9 +215,11 @@ you are looking at. See [`docs/control-protocol.md`](docs/control-protocol.md) a
 
 - **Engine first:** editor state and a command registry, with a thin egui window on top. Six crates
   in strict layers, from SysEx framing up to the UI ([`docs/architecture.md`](docs/architecture.md)).
+  The engine talks to the unit on a thread of its own, so a slow or silent unit never freezes the
+  window.
 - **Never crash:** no `unsafe`, and no `unwrap`, `expect` or `panic!` outside tests. A device that
   answers garbage, or not at all, produces an error message, not a crash.
-- **Tested without hardware:** 146 tests run against the simulated device, including hostile
+- **Tested without hardware:** 166 tests run against the simulated device, including hostile
   command parameters and literal bytes captured from a real unit.
 - **Clean-room:** written from a functional specification and observed behaviour. No code, artwork,
   fonts or skins from the original editor ([`docs/clean-room.md`](docs/clean-room.md) lists

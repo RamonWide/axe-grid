@@ -235,6 +235,8 @@ mod tests {
         assert!(parse(&args(&["--force"])).is_err());
     }
 
+    // Windows paths only come apart and join up as expected on Windows.
+    #[cfg(windows)]
     #[test]
     fn shortcuts_point_at_the_installed_app() {
         let app = install_dir(Path::new(r"C:\Users\O'Brien\AppData\Local")).join(APP_EXE);
@@ -248,6 +250,7 @@ mod tests {
         assert_eq!(shortcut_folders(false), ["Programs"]);
     }
 
+    #[cfg(windows)]
     #[test]
     fn the_installed_apps_entry_can_uninstall() {
         let entry = uninstall_entry(Path::new(r"C:\Apps\Axe-Grid"));

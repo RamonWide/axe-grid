@@ -33,7 +33,7 @@ axegrid-engine = { path = "crates/axegrid-engine" }
 axegrid-automation = { path = "crates/axegrid-automation" }
 axegrid-ui-egui = { path = "crates/axegrid-ui-egui" }
 serde_json = "1"
-getrandom = "0.3"
+getrandom = "0.4"
 eframe = "0.31"
 egui = "0.31"
 

@@ -121,7 +121,7 @@ jobs:
       - name: Checksums
         working-directory: dist
         run: sha256sum axe-grid-* > SHA256SUMS.txt && cat SHA256SUMS.txt
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist/axe-grid-*
       - name: Create the draft release

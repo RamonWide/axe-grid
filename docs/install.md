@@ -88,6 +88,9 @@ Axe-Grid talks to the unit over a MIDI port. There are two ways to get one.
 operating system, including their driver where one is required. If the unit then appears in your
 system as a MIDI device, Axe-Grid can use it. On one Windows 11 computer we tested, Windows
 refused to load the vendor's USB driver, so no MIDI port appeared; a MIDI interface worked.
+If that happens to you, the open-source [AxeTwoDriver](https://github.com/RamonWide/AxeTwoDriver)
+makes the unit's USB MIDI port appear again (as "AXE-FX II Audio Intfc"); it is experimental and
+has been tried on one computer.
 
 **A MIDI interface.** Any interface with 5-pin sockets works. Use two cables:
 

@@ -39,8 +39,11 @@ only on a slot the owner of the unit has named as disposable.
 USB: on current Windows 11 the vendor's 2014 kernel driver is refused
 (Device Manager code 52), so the unit exposes no USB MIDI port to any
 application. Axe-Grid works with any MIDI port Windows offers; it does not
-yet talk to the device over USB by itself. Parked for now; a
-user-space connection is a possible later project.
+talk to the device over USB by itself. The sister project
+[AxeTwoDriver](https://github.com/RamonWide/AxeTwoDriver) closes this gap
+from the system side: once installed, the unit appears as the MIDI port
+"AXE-FX II Audio Intfc", and Axe-Grid has been checked over it (connect,
+read the preset and grid, change scene) on one Axe-Fx II XL.
 
 ## Hardware incident (2026-10-11, resolved)
 

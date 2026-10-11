@@ -51,7 +51,7 @@ no known way to hang the unit.
 | Hardware coverage (models, firmware versions) | ~30% | M | One XL tested. II Mark I/II and XL+ are recognised by model byte but untested |
 | Protocol verification | ~70% of what is used | S | [gaps](docs/gaps.md#hardware-verification): store, tuner calibration and modifiers remain |
 | Platforms | ~50% | M | Windows tested. macOS and Linux build in CI, untested with a unit. No signed builds, no installers |
-| Connection | ~60% | M–L | Any MIDI port the system offers. No USB without a system driver |
+| Connection | ~60% | M–L | Any MIDI port the system offers. USB needs a system driver: the vendor's, or [AxeTwoDriver](https://github.com/RamonWide/AxeTwoDriver) on current Windows |
 | Stability and safety | ~50% | M | No panics by lint; the session still runs on the UI thread; no undo |
 | Automation (CLI, control channel, MCP) | ~80% | S | Works end to end; no per-client capabilities yet ([SECURITY](SECURITY.md)) |
 | Offline use | 0% | M | Nothing can be viewed or edited without a unit or the simulator |
@@ -108,8 +108,10 @@ The aim is that a player can use Axe-Grid for an evening without reaching for th
 
 ### Later, and open questions
 
-- **USB without a vendor driver.** On current Windows the vendor's driver may not load. A
-  user-space connection is possible in principle; it is parked until the rest is solid.
+- **USB without a vendor driver.** On current Windows the vendor's driver may not load. This is
+  now handled by a sister project, [AxeTwoDriver](https://github.com/RamonWide/AxeTwoDriver): it
+  hands the unit's USB MIDI to Windows' own driver, after which Axe-Grid connects over the USB
+  cable alone. Verified on one Axe-Fx II XL on Windows 11. Nothing is planned inside Axe-Grid.
 - **Global, I/O and MIDI settings.**
 - **Installers** (MSI, DMG, AppImage, Flatpak, `.deb`) and packages for package managers.
 - **Localization.**

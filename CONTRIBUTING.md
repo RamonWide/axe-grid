@@ -29,7 +29,7 @@ By taking part you agree to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Set up
 
-You need a stable [Rust](https://rustup.rs) toolchain, 1.88 or newer. The repository's
+You need a stable [Rust](https://rustup.rs) toolchain, 1.95 or newer. The repository's
 `rust-toolchain.toml` selects stable with `rustfmt` and `clippy`.
 
 | System | Extra packages |

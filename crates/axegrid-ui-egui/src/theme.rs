@@ -126,7 +126,7 @@ pub fn apply(ctx: &egui::Context) {
     widgets.open.corner_radius = RADIUS;
     widgets.hovered.bg_stroke = Stroke::new(1.0_f32, ACCENT);
     ctx.set_visuals(visuals);
-    ctx.style_mut(|style| {
+    ctx.global_style_mut(|style| {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(9.0, 4.0);
     });

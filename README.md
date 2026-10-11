@@ -217,7 +217,7 @@ you are looking at. See [`docs/control-protocol.md`](docs/control-protocol.md) a
 
 ## Build from source
 
-You need [Rust](https://rustup.rs) 1.88 or newer. On Linux, also install the ALSA headers
+You need [Rust](https://rustup.rs) 1.95 or newer. On Linux, also install the ALSA headers
 (`sudo apt install libasound2-dev pkg-config` on Debian and Ubuntu; other distributions are in
 [CONTRIBUTING.md](CONTRIBUTING.md#set-up)).
 

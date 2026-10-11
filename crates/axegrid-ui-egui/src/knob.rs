@@ -54,13 +54,27 @@ pub fn wheeled_value(raw: u32, max: u32, notches: i32, fine: bool) -> u32 {
     moved.clamp(0, i64::from(max)) as u32
 }
 
+/// How far the wheel turned this frame, before any smoothing: positive is up.
+pub fn wheel_turned(ui: &Ui) -> f32 {
+    ui.input(|input| {
+        input
+            .events
+            .iter()
+            .map(|event| match event {
+                egui::Event::MouseWheel { delta, .. } => delta.y,
+                _ => 0.0,
+            })
+            .sum()
+    })
+}
+
 /// Wheel notches turned over `response` this frame: +1 up, -1 down. The
 /// scroll is used up, so nothing behind the control scrolls with it.
 pub fn wheel(ui: &Ui, response: &Response) -> i32 {
     if !response.hovered() {
         return 0;
     }
-    let turned = ui.input(|input| input.raw_scroll_delta.y);
+    let turned = wheel_turned(ui);
     if turned == 0.0 {
         return 0;
     }
@@ -94,7 +108,7 @@ pub fn label(ui: &Ui, rect: Rect, text: &str, hot: bool) {
     let mut job = egui::text::LayoutJob::simple(text.to_owned(), font, ink, rect.width() - 8.0);
     job.halign = Align::Center;
     job.wrap.max_rows = 2;
-    let galley = ui.fonts(|fonts| fonts.layout_job(job));
+    let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
     let top = rect.top() + (LABEL_BAND - galley.size().y).max(0.0) / 2.0;
     ui.painter().with_clip_rect(rect).galley(pos2(rect.center().x, top), galley, ink);
 }

@@ -83,7 +83,7 @@ for the rest].
 | `03` | a 1, b 1 (preset number in two bytes) | Send a stored preset as a dump; answered by `77` … `78` … `79` | B layout, H meaning |
 | `05` | block 2×7, cell 1 | Place a block in a grid cell | B layout, P meaning |
 | `06` | a 1, b 1, c 1 | Connect/disconnect two grid cells | B layout, P meaning |
-| `07` | effect 2×7, param 2×7, selector 2×7, value 3×7, set 1 | Get/set a modifier field | B |
+| `07` | effect 2×7, param 2×7, selector 2×7, value 3×7, set 1 | Get (`set=0`) or set (`set=1`) a modifier field, see 4.7 | B layout, H get, P set |
 | `08` | — | Firmware version | B |
 | `09` | 32 characters | Set preset name | B |
 | `0E` | — | Per-block state list | B |
@@ -128,7 +128,7 @@ Also sent, layout known but purpose not yet determined [B, ?]: `18`, `1A`,
 | `16` | type 5×7, min, max, scale, step (each an IEEE-754 single as 5×7) | Parameter metadata | B |
 | `20` | 48 × (block 2×7, routing 2×7) | Grid, see 4.4 | B |
 | `21` | — | Front panel changed something | B |
-| `23` | status 1 | Looper status | B |
+| `23` | status 1, position 1 | Looper status, see 4.8 | B layout, H status, P position |
 | `28` | NUL-terminated strings back to back | Enum strings | B |
 | `29` | scene 1 | Scene | B |
 | `2A` | flag 1 | Preset edited | B |
@@ -298,6 +298,89 @@ of the cab block's cab parameter in the definition cache (1216) [F]. [P] The
 XL+ has the same cabinet memory. [?] The number of factory cabs on a Mark
 I/II is not known here, so its user cabs cannot be located in the list.
 
+### 4.7 Modifiers (function `07`)
+
+A modifier ties a controller (an LFO, an envelope, a pedal and so on) to one
+parameter. It is addressed by the parameter it belongs to plus a selector
+that names one of its fields. [B] The selector names are stored in the binary
+and reproduced in `params.json` under `modifier`.
+
+[H] Read with `set = 0` for Amp 1's input drive, a parameter with no
+modifier, on firmware 32.00. Each reply repeats effect, parameter and
+selector, then the value and the device's text for it:
+
+| Selector | Name | Raw value read | Text read | Meaning |
+|---|---|---|---|---|
+| 0 | `MOD_CTRLID` | 0 | `NONE` | Source; 0 is no modifier [H text, P meaning] |
+| 1 | `MOD_MIN` | 0 | `0.00` | Lowest parameter value, in the parameter's own unit |
+| 2 | `MOD_MAX` | 65534 | `10.00` | Highest parameter value |
+| 3 | `MOD_STARTPT` | 0 | `0.0 %` | Curve start |
+| 4 | `MOD_MIDPT` | 32767 | `50.0 %` | Curve middle |
+| 5 | `MOD_ENDPT` | 65534 | `100.0 %` | Curve end |
+| 6 | `MOD_SLOPE` | 32767 | `50.0 %` | Curve slope |
+| 7 | `MOD_DAMPING` | 655 | `10 ms` | Damping |
+| 8 | `MOD_EFFECTID` | 106 | (none) | The block the modifier belongs to |
+| 9 | `MOD_PARAM` | 1 | (none) | The parameter it belongs to |
+| 10 | `MOD_AUTOENGAGE` | 0 | `OFF` | Auto engage |
+| 11 | `MOD_PCRESET` | 0 | `OFF` | Reset on preset change |
+| 12 | `MOD_OFFVAL` | 0 | `5.0 %` | Off value for auto engage |
+| 13 | `MOD_SCALE` | 32767 | `1.000` | Scale |
+| 14 | `MOD_OFFSET` | 32767 | `0.0 %` | Offset |
+
+[H] **Selector 15 must never be sent.** `MOD_END` in the table is an end
+marker, not a field. A unit asked for it with `set = 0` did not answer, and
+answered no other message afterwards until it was switched off and on. The
+Windows MIDI service was left unable to open ports as well. Nothing on the
+unit was changed. Only selectors 0 to 14 exist.
+
+[P] With `set = 1` the field takes the value and the reply reports what is in
+force, as `02` does for a parameter. A modifier is attached by setting
+selector 0 to a source other than 0 and removed by setting it back to 0.
+**None of this has been sent to a unit.** [?] The numbering and the number of
+sources, what the device answers for a parameter that cannot take a modifier,
+and how many modifiers a preset may hold (status `NO_MODIFIERS_LEFT` exists).
+
+[P] The owner's manual lists 23 sources besides none (four LFO outputs, two
+ADSRs, the sequencer, the envelope follower, the pitch detector, twelve
+external controllers and two scene controllers), seven auto-engage settings
+and two for the reset on preset change. Until a unit has shown what it does
+with a choice past the last, an editor should send selector 0 no higher than
+23, selector 10 no higher than 6 and selector 11 no higher than 1.
+
+[?] How the device shapes the controller with start, middle, end, slope,
+scale and offset is not published. The editor's curve is its own sketch: a
+line through the three points, bowed by the slope, then scaled and shifted.
+
+### 4.8 Looper and scenes
+
+[H] `23` with payload 1 is acknowledged with a `64` status and switches on
+status reports; with 0 it switches them off. A report's first byte has one
+bit per transport state: bit 0 record, 1 play, 2 once, 3 overdub, 4 reverse,
+5 half speed (record and play were seen on a unit). [P] The second byte is
+how far playback is through the loop, 0 to 99. [?] How often a report is sent
+while a loop plays.
+
+[H] The transport is driven with MIDI control changes on the device's
+channel: record 28, play 29, once 30, overdub 31, reverse 32, half speed 120,
+undo 121, the device's default assignments.
+
+[P] A scene has no name on this device family; the preset holds no text for
+one. What belongs to a scene: each block's bypass state and X/Y state (4.3),
+[F] the output mixer's main level for the scene (`OUTPUT_MAIN1` to
+`OUTPUT_MAIN8`) and the values of the two scene controllers
+(`CONTROLLERS_SCENE1_VAL1` to `VAL8`, `CONTROLLERS_SCENE2_VAL1` to `VAL8`).
+Those are parameters with one ID per scene, so one scene's values can be read
+and written while another is selected.
+
+[H] `01` lists a block's parameters for the X/Y set the block is on. Reading
+the other set means switching to it with `11`.
+
+[F] The Tone Match block starts a capture when `EQMATCH_CAPTUREREF` (the
+reference) or `EQMATCH_CAPTUREUSER` (the preset's own sound) is set to 1 and
+[H] both read back as 1 afterwards. [P] Setting them to 0 ends a capture and
+setting `EQMATCH_MATCH` to 1 computes the correction. [?] Whether a capture
+ends by itself, and the message that carries the measured spectra.
+
 ## 5. Identifiers
 
 [B] Block IDs 100–170 and all per-effect parameter IDs are stored in the
@@ -336,5 +419,6 @@ the prompt toggles.
 ## 8. Not covered
 
 Most of the preset word layout, bank and bundle files, block library files,
-Axe-Change, firmware update, IR capture/conversion, Tone Match, the
-looper/sequencer UIs, auto-update.
+Axe-Change, firmware update, IR capture/conversion, the Tone Match spectrum
+display, the sequencer UI, auto-update. How the original resets a block to
+its defaults, and how it lists modifier sources.

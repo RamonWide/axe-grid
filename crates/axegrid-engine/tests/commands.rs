@@ -360,7 +360,7 @@ fn cabling_a_block_to_the_input_and_the_output() {
 #[test]
 fn looper_buttons_send_controllers_and_show_their_state() {
     let mut engine = connected();
-    assert_eq!(engine.inspect()["looper"], json!({ "watched": false, "active": null }));
+    assert_eq!(engine.inspect()["looper"], json!({ "watched": false, "active": null, "position": null }));
     engine.run("looper.watch", &Value::Null).unwrap();
     assert_eq!(
         engine.run("looper.press", &json!({ "button": "record" })).unwrap(),

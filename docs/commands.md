@@ -3,7 +3,7 @@
 Generated from the registry by `scripts/gen-command-docs.py`. Do not edit by hand;
 regenerate after adding or changing a command (see `CONTRIBUTING.md`).
 
-66 commands.
+83 commands.
 
 ## device
 
@@ -66,7 +66,7 @@ Switch the device's tuner on or off. Menu: Device > Tuner. Shortcut: T.
 
 ### `looper.watch`
 
-Ask the device to report what the looper is doing, so its buttons can show their state. Selecting the Looper block does this by itself.
+Ask the device to report what the looper is doing, so its buttons can show their state and the editor how far the loop has played. Selecting the Looper block does this by itself. The position is read as public documentation describes it and has not yet been seen on a unit.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -80,6 +80,25 @@ Press one of the looper's transport buttons. They are sent as the MIDI controlle
 |---|---|---|---|
 | `button` | string | yes | record, play, once, stack, reverse, half or undo |
 | `on` | boolean | no | State to switch to; by default the button toggles |
+
+## tonematch
+
+### `tonematch.capture`
+
+Start or stop the Tone Match block's capture of the reference signal, of the local signal (the preset's own sound), or of both. While a capture runs the block averages what it hears.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `signal` | string | yes | reference, local or both |
+| `on` | boolean | no | false stops the capture; default true |
+
+### `tonematch.match`
+
+Stop both captures and have the Tone Match block work out the correction that makes the local signal sound like the reference. Changes the edit buffer only. Starting a capture is confirmed on a unit; stopping one and matching are not yet.
+
+### `tonematch.status`
+
+Read whether the Tone Match block is capturing the reference or the local signal. Only reads.
 
 ## tempo
 
@@ -150,6 +169,31 @@ Switch to the next scene, wrapping from 8 to 1. Menu: Preset > Next Scene. Short
 ### `scene.previous`
 
 Switch to the previous scene, wrapping from 1 to 8. Menu: Preset > Previous Scene. Shortcut: Ctrl+Down.
+
+### `scene.rename`
+
+Give a scene of the current preset a name. The device has no scene names: they are kept on this computer, by preset slot, and shown while the preset in that slot keeps its name.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `scene` | integer | no | Scene number, 1 to 8; defaults to the current scene |
+| `name` | string | yes | Up to 24 characters; empty takes the name away |
+
+### `scene.names`
+
+The eight scenes of the current preset with the names given to them on this computer.
+
+### `scene.copy`
+
+Remember what makes up the current scene: which blocks are bypassed, which X/Y set each is on, the output's main level for the scene and the two scene controllers. Only reads. Menu: Scene > Copy Scene. Shortcut: Ctrl+Shift+C.
+
+### `scene.paste`
+
+Make a scene the same as the one last copied, in the edit buffer: bypass and X/Y of every block both have, the main level and the scene controllers. Switches to that scene. Undo takes it back. Menu: Scene > Paste Scene. Shortcut: Ctrl+Shift+V.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `scene` | integer | no | Scene number, 1 to 8; defaults to the current scene |
 
 ## preset
 
@@ -440,6 +484,90 @@ Remove the cable between a cell and a cell in the column on its left.
 | `column` | integer | yes | 0 to 11, left to right |
 | `row` | integer | yes | 0 to 3, top to bottom |
 | `from_row` | integer | yes | Row, 0 to 3, of the source cell in the column to the left |
+
+## block
+
+### `block.copy`
+
+Remember every setting of a block, to paste into a block of the same kind in this or another preset. Bypass and modifiers are not part of it. Only reads, unless both sets are asked for: then the block is switched to its other X/Y set and back, which can be heard. Menu: Block > Copy Block. Shortcut: Ctrl+C.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Amp 1"; defaults to the selected block |
+| `sets` | string | no | "current" (default): the X/Y set the block is on; "both": X and Y |
+
+### `block.paste`
+
+Give a block the settings last copied from a block of the same kind, in the edit buffer. One copied set goes to the X/Y set the block is on; a copy of both replaces both. Only parameters that differ are sent, the block's type first. Undo takes it back. Menu: Block > Paste Block. Shortcut: Ctrl+V.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Amp 1"; defaults to the selected block |
+
+### `block.copy_x_to_y`
+
+Make a block's Y set the same as its X set. The block ends on the set it was on. Menu: Block > Copy X to Y.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Amp 1"; defaults to the selected block |
+
+### `block.copy_y_to_x`
+
+Make a block's X set the same as its Y set. The block ends on the set it was on. Menu: Block > Copy Y to X.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Amp 1"; defaults to the selected block |
+
+## modifier
+
+### `modifier.open`
+
+Read the modifier of a parameter: its source, range, curve points and the rest, each with the device's own text, and a sketch of the curve. Only reads. The device refuses for a parameter that cannot have a modifier.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Wah 1"; defaults to the selected block |
+| `param` | integer or string | no | Parameter ID or symbolic name such as "WAH_CONTROL"; defaults to the parameter whose modifier is open |
+
+### `modifier.close`
+
+Close the modifier window.
+
+### `modifier.attach`
+
+Attach a controller to a parameter in the edit buffer by setting the modifier's source. The device names the sources; 0 is none, and the numbering is the device's own. Written from public documentation of the message: setting a modifier field has not yet been confirmed on a unit.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Wah 1"; defaults to the selected block |
+| `param` | integer or string | no | Parameter ID or symbolic name such as "WAH_CONTROL"; defaults to the parameter whose modifier is open |
+| `source` | integer or string | yes | Source number from 1, or a name listed by modifier.sources |
+
+### `modifier.remove`
+
+Take the modifier off a parameter in the edit buffer by setting its source to none. Its other fields keep their values on the device. Not yet confirmed on a unit.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Wah 1"; defaults to the selected block |
+| `param` | integer or string | no | Parameter ID or symbolic name such as "WAH_CONTROL"; defaults to the parameter whose modifier is open |
+
+### `modifier.set`
+
+Set one field of a modifier to a raw value and return what the device applied, with its text. Not yet confirmed on a unit.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `block` | integer or string | no | Block ID or name such as "Wah 1"; defaults to the selected block |
+| `param` | integer or string | no | Parameter ID or symbolic name such as "WAH_CONTROL"; defaults to the parameter whose modifier is open |
+| `field` | string | yes | source, min, max, start, mid, end, slope, damping, auto_engage, pc_reset, off_value, scale or offset |
+| `value` | integer | yes | Raw value, 0 to 65534; for source, auto_engage and pc_reset, the choice number |
+
+### `modifier.sources`
+
+The modifier sources the device has named so far in this session, by number. The device offers no list; a name is learned when a modifier that uses the source is read or set.
 
 ## block
 

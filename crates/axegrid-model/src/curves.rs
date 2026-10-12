@@ -67,9 +67,67 @@ pub fn adsr(attack_ms: f64, decay_ms: f64, sustain_ms: f64, level: f64, release_
     ]
 }
 
+/// What a modifier makes of its controller, as `(controller, parameter)`
+/// pairs, both from 0 to 1. The curve runs through `start` at the
+/// controller's minimum, `mid` half-way and `end` at its maximum; `slope`
+/// (0 to 1, 0.5 is straight) bows the way there, and `scale` and `offset`
+/// stretch and shift the result. The device does not publish its formula,
+/// so this is a sketch of the shape and not what it computes.
+pub struct Modifier {
+    pub start: f64,
+    pub mid: f64,
+    pub end: f64,
+    pub slope: f64,
+    pub scale: f64,
+    pub offset: f64,
+}
+
+impl Modifier {
+    /// The parameter's position for a controller position.
+    pub fn at(&self, controller: f64) -> f64 {
+        // A slope above the middle rises early, one below it rises late.
+        let bow = 4.0_f64.powf(0.5 - self.slope.clamp(0.0, 1.0));
+        let along = controller.clamp(0.0, 1.0).powf(bow);
+        let shaped = if along < 0.5 {
+            self.start + (self.mid - self.start) * along * 2.0
+        } else {
+            self.mid + (self.end - self.mid) * (along - 0.5) * 2.0
+        };
+        (shaped * self.scale + self.offset).clamp(0.0, 1.0)
+    }
+
+    pub fn curve(&self, points: usize) -> Vec<(f64, f64)> {
+        let last = (points.max(2) - 1) as f64;
+        (0..points.max(2)).map(|index| (index as f64 / last, self.at(index as f64 / last))).collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plain_modifier_is_a_straight_line() {
+        let plain = Modifier { start: 0.0, mid: 0.5, end: 1.0, slope: 0.5, scale: 1.0, offset: 0.0 };
+        let curve = plain.curve(5);
+        assert_eq!(curve, [(0.0, 0.0), (0.25, 0.25), (0.5, 0.5), (0.75, 0.75), (1.0, 1.0)]);
+        // Turned round, it falls; a raised middle bends it; scale and offset stay in range.
+        let down = Modifier { start: 1.0, mid: 0.5, end: 0.0, ..plain };
+        assert_eq!((down.at(0.0), down.at(1.0)), (1.0, 0.0));
+        let bent =
+            Modifier { mid: 0.9, ..Modifier { start: 0.0, mid: 0.5, end: 1.0, slope: 0.5, scale: 1.0, offset: 0.0 } };
+        assert!((bent.at(0.5) - 0.9).abs() < 1e-9);
+        let pushed = Modifier {
+            scale: 3.0,
+            offset: -0.2,
+            ..Modifier { start: 0.0, mid: 0.5, end: 1.0, slope: 0.5, scale: 1.0, offset: 0.0 }
+        };
+        assert_eq!((pushed.at(0.0), pushed.at(1.0)), (0.0, 1.0));
+        // More slope gets there sooner.
+        let early =
+            Modifier { slope: 0.9, ..Modifier { start: 0.0, mid: 0.5, end: 1.0, slope: 0.5, scale: 1.0, offset: 0.0 } };
+        assert!(early.at(0.25) > 0.25 && early.curve(1).len() == 2);
+    }
 
     #[test]
     fn a_compressor_flattens_what_is_above_the_threshold() {

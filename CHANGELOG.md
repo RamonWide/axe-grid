@@ -10,6 +10,31 @@ listed under "Changed".
 
 ### Added
 
+- **Scene names.** Right-click a scene button and choose Name. The unit has no scene names, so
+  they are kept in a file on this computer, by preset slot, and shown while the preset in that
+  slot keeps its name; they follow a preset you rename or save to another slot from Axe-Grid.
+  Commands `scene.rename` and `scene.names`.
+- **Copy and paste a scene** (the scene buttons' right-click menu, the Scene menu,
+  Ctrl+Shift+C and Ctrl+Shift+V): which blocks are bypassed, which X/Y set each is on, the
+  output's main level for the scene and the two scene controllers. A paste is one step to undo.
+  Commands `scene.copy` and `scene.paste`. Not yet confirmed on a unit.
+- **Copy and paste a block** (a block's right-click menu, the Block menu, Ctrl+C and Ctrl+V)
+  into a block of the same kind, in the same preset or another: every setting of the X/Y set it
+  is on, or of both. "Copy X to Y" and "Copy Y to X" make one set the same as the other. Only
+  what differs is sent, and a paste is one step to undo. Commands `block.copy`, `block.paste`,
+  `block.copy_x_to_y` and `block.copy_y_to_x`. Not yet confirmed on a unit.
+- **Modifiers.** Right-click a knob or a fader to open the modifier of its parameter: step the
+  source to attach a controller or take it off again, turn Min, Max, Start, Mid, End, Slope,
+  Damping, Off Value, Scale and Offset, and see a curve of what the controller will do. Every
+  field shows the unit's own text. Commands `modifier.open`, `modifier.close`,
+  `modifier.attach`, `modifier.remove`, `modifier.set` and `modifier.sources`. Reading a
+  modifier is confirmed on a unit; changing one is not yet, and the curve is a sketch.
+- **The looper shows how far the loop has played**, as a bar above its controls. Not yet
+  confirmed on a unit.
+- **Tone Match in three steps** above the block's controls: capture the reference, capture your
+  own sound, match; the buttons show what the unit is capturing. Commands `tonematch.capture`,
+  `tonematch.match` and `tonematch.status`.
+
 - **Undo and redo** (Ctrl+Z and Ctrl+Y, the Undo and Redo buttons, the Edit menu) for parameter
   changes, bypass, X/Y, the preset name and everything done on the grid: placing, moving and
   removing blocks, and cables. Turning one knob is one step. An edit made in another scene, or on a
@@ -57,7 +82,10 @@ listed under "Changed".
 - The app starts at once and looks for the unit in the background.
 - Axe-Grid no longer loads the original editor's definition file when it starts.
   `definitions.load` and `definitions.load_installed` remain for those who want them.
-- `app.inspect` and `state.inspect` also report `history` and `lists`.
+- `app.inspect` and `state.inspect` also report `history` and `lists`, and now `scenes`,
+  `clipboard` and `modifier`; `looper` carries a `position`.
+- `axegrid-cli` and the desktop app keep scene names in an `Axe-Grid` folder under the system's
+  application-data folder. Nothing else is written there.
 - Faders are twice as tall, and a fader's cap now follows the pointer over the length of its
   track.
 

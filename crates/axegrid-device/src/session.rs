@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 
 use axegrid_model::Grid;
 use axegrid_sysex::{
-    function, BlockState, Dump, DumpError, DumpKind, Frame, Model, ParamAddress, ParamInfo, ParamValue, Reply, Request,
+    function, BlockState, Dump, DumpError, DumpKind, Frame, Model, ModifierValue, ParamAddress, ParamInfo, ParamValue,
+    Reply, Request, MODIFIER_FIELDS,
 };
 
 /// A bidirectional stream of complete SysEx messages.
@@ -295,6 +296,33 @@ impl<T: Transport> Session<T> {
         }
     }
 
+    /// Reads one field of the modifier on a parameter.
+    pub fn modifier(&mut self, address: ParamAddress, field: u16) -> Result<ModifierValue, SessionError> {
+        self.modifier_reply(&Request::Modifier { address, field, value: None })
+    }
+
+    /// Sets one field of the modifier on a parameter and returns what the
+    /// device applied.
+    pub fn set_modifier(
+        &mut self,
+        address: ParamAddress,
+        field: u16,
+        value: u16,
+    ) -> Result<ModifierValue, SessionError> {
+        self.modifier_reply(&Request::Modifier { address, field, value: Some(value) })
+    }
+
+    fn modifier_reply(&mut self, request: &Request) -> Result<ModifierValue, SessionError> {
+        // A unit asked for a field past the last one stopped answering for good.
+        if matches!(request, Request::Modifier { field, .. } if *field >= MODIFIER_FIELDS) {
+            return Err(SessionError::UnexpectedReply { function: function::MODIFIER });
+        }
+        match self.request(request)? {
+            Reply::Modifier(value) => Ok(value),
+            _ => Err(SessionError::UnexpectedReply { function: function::MODIFIER }),
+        }
+    }
+
     /// Type and range of a parameter.
     pub fn param_info(&mut self, address: ParamAddress) -> Result<ParamInfo, SessionError> {
         match self.request(&Request::ParamInfo(address))? {
@@ -384,6 +412,7 @@ fn function_of(reply: &Reply) -> u8 {
         Reply::ParamDumpItem(_) => PARAM_DUMP,
         Reply::ParamInfo(_) => PARAM_INFO,
         Reply::ParamStrings(_) => PARAM_STRINGS,
+        Reply::Modifier(_) => MODIFIER,
         Reply::BlockXy { .. } => BLOCK_XY,
         Reply::Tuner { .. } => TUNER,
         Reply::TempoBeat => TEMPO_BEAT,

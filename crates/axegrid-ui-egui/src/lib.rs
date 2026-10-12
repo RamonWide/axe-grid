@@ -79,6 +79,13 @@ const CPU_PERIOD: Duration = Duration::from_secs(2);
 const BEAT_FLASH: Duration = Duration::from_millis(110);
 /// Tuner offsets within this many steps of centre read as in tune.
 const IN_TUNE: i64 = 2;
+/// Height of the strip the looper and the tone match show above their controls.
+const STRIP: f32 = 34.0;
+/// How often a running tone match capture is read back.
+const TONE_PERIOD: Duration = Duration::from_millis(500);
+/// Knobs per row of the modifier window, and the side of its curve.
+const MODIFIER_ROW: usize = 5;
+const MODIFIER_GRAPH: f32 = 190.0;
 const TUNER_SPAN: f32 = 63.0;
 
 /// A command the user asked for during this frame.
@@ -100,11 +107,17 @@ fn value_key(id: &str, params: &Value) -> Option<String> {
     match id {
         "param.set" => Some(format!("{}/{}", params["block"], params["param"])),
         "tempo.set" => Some(TEMPO_KEY.to_owned()),
+        "modifier.set" => Some(modifier_key(params["field"].as_str().unwrap_or_default())),
         _ => None,
     }
 }
 
 const TEMPO_KEY: &str = "tempo";
+
+/// What a field of the open modifier is keyed by while it is being set.
+fn modifier_key(field: &str) -> String {
+    format!("modifier/{field}")
+}
 
 /// One end of a cable being drawn: a cell, and whether it is its output side.
 type CableEnd = (usize, usize, bool);
@@ -235,6 +248,10 @@ pub struct Shell {
     cpu_read_at: Option<Instant>,
     beats_seen: u64,
     beat_at: Option<Instant>,
+    /// The scene being named, with the text typed so far.
+    scene_rename: Option<(u8, String)>,
+    scene_rename_needs_focus: bool,
+    tone_read_at: Option<Instant>,
 }
 
 /// Turns a registry shortcut such as `Ctrl+Right` or `F5` into an egui one.
@@ -290,7 +307,7 @@ impl Shell {
     /// Starts the engine on its own thread and looks for the unit. `ctx` is
     /// repainted whenever the engine has finished a command.
     pub fn new(ctx: egui::Context) -> std::io::Result<Self> {
-        let worker = Worker::spawn(Engine::new(), move || ctx.request_repaint())?;
+        let worker = Worker::spawn(Engine::for_this_computer(), move || ctx.request_repaint())?;
         let (report, finished) = mpsc::channel();
         let mut shell = Self {
             view: worker.view(),
@@ -321,6 +338,9 @@ impl Shell {
             cpu_read_at: None,
             beats_seen: 0,
             beat_at: None,
+            scene_rename: None,
+            scene_rename_needs_focus: false,
+            tone_read_at: None,
         };
         shell.submit("device.list_ports", Value::Null, true);
         shell.find_unit();
@@ -448,6 +468,12 @@ impl Shell {
             self.reading_lists = true;
             self.submit("block.read_lists", json!({ "budget": LIST_BUDGET }), true);
         }
+        let capturing =
+            ["capturing_reference", "capturing_local"].iter().any(|key| self.view.editor["tone_match"][*key] == true);
+        if idle && capturing && self.tone_read_at.is_none_or(|at| at.elapsed() >= TONE_PERIOD) {
+            self.tone_read_at = Some(Instant::now());
+            self.submit("tonematch.status", Value::Null, true);
+        }
         if idle {
             self.library_work();
         }
@@ -472,7 +498,24 @@ impl Shell {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        // Copy and paste arrive as events of their own, not as key presses.
+        let (copied, pasted) = ctx.input(|input| {
+            let has = |wanted: fn(&egui::Event) -> bool| input.events.iter().any(wanted);
+            (has(|event| matches!(event, egui::Event::Copy)), has(|event| matches!(event, egui::Event::Paste(_))))
+        });
+        if copied && self.view.disabled_reason("block.copy").is_none() {
+            actions.push(("block.copy", Value::Null));
+            // Something on the system clipboard, so that a paste is offered back.
+            let name = self.view.state.selected_block.map(blocks::label).unwrap_or_default();
+            ctx.copy_text(format!("Axe-Grid block: {name}"));
+        }
+        if pasted && self.view.disabled_reason("block.paste").is_none() {
+            actions.push(("block.paste", Value::Null));
+        }
         for command in registry().iter().filter(|c| !c.shortcut.is_empty()) {
+            if matches!(command.id, "block.copy" | "block.paste") {
+                continue;
+            }
             let Some(shortcut) = parse_shortcut(command.shortcut) else { continue };
             let enabled = self.view.disabled_reason(command.id).is_none();
             if enabled && ctx.input_mut(|input| input.consume_shortcut(&shortcut)) {
@@ -629,9 +672,34 @@ impl Shell {
         let state = &view.state;
         ui.label(RichText::new("SCENE").small().color(theme::TEXT_DIM));
         for scene in 0..8u8 {
-            if lit_button(ui, &(scene + 1).to_string(), state.preset.scene == scene, theme::ACCENT).clicked() {
+            let name = state.scene_names.get(usize::from(scene)).map(String::as_str).unwrap_or_default();
+            let text = if name.is_empty() { (scene + 1).to_string() } else { format!("{} {name}", scene + 1) };
+            let button = lit_button(ui, &text, state.preset.scene == scene, theme::ACCENT);
+            if button.clicked() {
                 actions.push(("scene.select", json!({ "scene": scene + 1 })));
             }
+            button.on_hover_text("Click to switch; right-click to name, copy or paste").context_menu(|ui| {
+                if ui.button("Name…").clicked() {
+                    self.scene_rename = Some((scene, name.to_owned()));
+                    self.scene_rename_needs_focus = true;
+                    ui.close();
+                }
+                if ui
+                    .button("Copy")
+                    .on_hover_text("Bypass and X/Y of every block, main level, scene controllers")
+                    .clicked()
+                {
+                    if state.preset.scene != scene {
+                        actions.push(("scene.select", json!({ "scene": scene + 1 })));
+                    }
+                    actions.push(("scene.copy", Value::Null));
+                    ui.close();
+                }
+                if ui.add_enabled(view.scene_copied, egui::Button::new("Paste")).clicked() {
+                    actions.push(("scene.paste", json!({ "scene": scene + 1 })));
+                    ui.close();
+                }
+            });
         }
         ui.separator();
         let tuner = lit_button(ui, "Tuner", state.tuner_on, theme::LAMP_ON);
@@ -724,6 +792,31 @@ impl Shell {
             if ui.button(if on_x { "Switch to Y" } else { "Switch to X" }).clicked() {
                 actions.push(("block.set_xy", json!({ "block": id, "state": if on_x { "Y" } else { "X" } })));
                 ui.close();
+            }
+            ui.separator();
+            if ui.button("Copy").on_hover_text("Copy the settings of the X/Y set it is on").clicked() {
+                actions.push(("block.copy", json!({ "block": id })));
+                ui.close();
+            }
+            let both = ui.button("Copy X and Y");
+            if both.on_hover_text("Switches the block to its other set and back, which can be heard").clicked() {
+                actions.push(("block.copy", json!({ "block": id, "sets": "both" })));
+                ui.close();
+            }
+            let clip = &self.view.block_clip;
+            let copied = clip["block"].as_u64().and_then(|from| blocks::by_id(from as u16));
+            let fits = copied.zip(blocks::by_id(id)).is_some_and(|(from, to)| from.effect_type == to.effect_type);
+            let paste = clip["name"].as_str().map_or_else(|| "Paste".to_owned(), |name| format!("Paste {name}"));
+            let paste = ui.add_enabled(fits, egui::Button::new(paste));
+            if paste.on_disabled_hover_text("Copy a block of this kind first").clicked() {
+                actions.push(("block.paste", json!({ "block": id })));
+                ui.close();
+            }
+            for (name, command) in [("Copy X to Y", "block.copy_x_to_y"), ("Copy Y to X", "block.copy_y_to_x")] {
+                if ui.button(name).clicked() {
+                    actions.push((command, json!({ "block": id })));
+                    ui.close();
+                }
             }
             ui.separator();
         }
@@ -1052,6 +1145,7 @@ impl Shell {
             knob::Change::Typed(value) => {
                 ("param.set_displayed", json!({ "block": block, "param": control.id, "value": value }))
             }
+            knob::Change::More => ("modifier.open", json!({ "block": block, "param": control.id })),
         };
         match control.kind.as_str() {
             "spacer" => {
@@ -1154,6 +1248,7 @@ impl Shell {
         match graph["kind"].as_str() {
             Some("dynamics") => Self::level_graph(ui, size, graph),
             Some("envelope") => Self::envelope_graph(ui, size, graph),
+            Some("modifier") => Self::modifier_graph(ui, size, graph),
             _ => Self::eq_graph(ui, size, graph),
         }
     }
@@ -1267,6 +1362,192 @@ impl Shell {
         painter.text(plot.right_bottom() + vec2(0.0, 2.0), Align2::RIGHT_TOP, label, small, theme::TEXT_DIM);
     }
 
+    /// Draws what a modifier makes of its controller: the parameter, from
+    /// its lowest to its highest value, against the controller's travel.
+    fn modifier_graph(ui: &mut egui::Ui, size: Vec2, graph: &Value) {
+        let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+        let plot = rect.shrink2(vec2(12.0, 18.0));
+        let at = |(x, y): (f32, f32)| {
+            pos2(plot.left() + plot.width() * x.clamp(0.0, 1.0), plot.bottom() - plot.height() * y.clamp(0.0, 1.0))
+        };
+        let painter = ui.painter().with_clip_rect(rect);
+        painter.rect_filled(rect, theme::RADIUS, theme::BACKDROP);
+        let faint = Stroke::new(1.0_f32, theme::RAISED);
+        for step in [0.0_f32, 0.5, 1.0] {
+            painter.line_segment([at((step, 0.0)), at((step, 1.0))], faint);
+            painter.line_segment([at((0.0, step)), at((1.0, step))], faint);
+        }
+        let line: Vec<Pos2> = Self::pairs(graph, "points").into_iter().map(at).collect();
+        painter.add(egui::Shape::line(line, Stroke::new(2.0_f32, theme::ACCENT)));
+        let small = FontId::proportional(9.0);
+        let text = |key: &str| graph[key].as_str().unwrap_or_default().to_owned();
+        painter.text(rect.left_top() + vec2(4.0, 3.0), Align2::LEFT_TOP, text("max"), small.clone(), theme::TEXT_DIM);
+        let low = rect.left_bottom() + vec2(4.0, -3.0);
+        painter.text(low, Align2::LEFT_BOTTOM, text("min"), small.clone(), theme::TEXT_DIM);
+        let travel = rect.right_bottom() + vec2(-4.0, -3.0);
+        painter.text(travel, Align2::RIGHT_BOTTOM, "controller →", small, theme::TEXT_DIM);
+    }
+
+    /// How far the loop has played, as a bar above the looper's controls.
+    fn looper_bar(ui: &mut egui::Ui, looper: &Value) {
+        if !looper.is_object() {
+            return;
+        }
+        let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), STRIP - 8.0), Sense::hover());
+        let track = Rect::from_center_size(bar.center(), vec2(bar.width(), 8.0));
+        ui.painter().rect_filled(track, 4.0_f32, theme::EDGE);
+        if let Some(position) = looper["position"].as_u64() {
+            let filled = track.width() * (position.min(99) as f32 + 1.0) / 100.0;
+            let played = Rect::from_min_size(track.min, vec2(filled, track.height()));
+            ui.painter().rect_filled(played, 4.0_f32, theme::LAMP_ON);
+        }
+        ui.add_space(8.0);
+    }
+
+    /// The three steps of a tone match, above the block's controls.
+    fn tone_match_steps(ui: &mut egui::Ui, tone: &Value, actions: &mut Vec<Action>) {
+        if !tone.is_object() {
+            return;
+        }
+        ui.allocate_ui(vec2(ui.available_width(), STRIP - 8.0), |ui| {
+            ui.horizontal(|ui| {
+                let steps = [
+                    ("1  Capture the reference", "capturing_reference", "reference"),
+                    ("2  Capture your own sound", "capturing_local", "local"),
+                ];
+                for (title, key, signal) in steps {
+                    let on = tone[key] == true;
+                    ui.label(RichText::new(title).small().color(theme::TEXT_DIM));
+                    let hint =
+                        if on { "Click to stop" } else { "Starts averaging what the block hears; play while it runs" };
+                    let button = lit_button(ui, if on { "Capturing…" } else { "Start" }, on, theme::LAMP_ON);
+                    if button.on_hover_text(hint).clicked() {
+                        actions.push(("tonematch.capture", json!({ "signal": signal, "on": !on })));
+                    }
+                    ui.separator();
+                }
+                ui.label(RichText::new("3").small().color(theme::TEXT_DIM));
+                if ui.button("Match").on_hover_text("Stop both captures and work out the correction").clicked() {
+                    actions.push(("tonematch.match", Value::Null));
+                }
+            });
+        });
+        ui.add_space(8.0);
+    }
+
+    /// The window of the modifier that is open.
+    fn modifier_window(&self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let view = self.view.clone();
+        let modifier = &view.modifier;
+        if !modifier.is_object() {
+            return;
+        }
+        let text = |value: &Value| value.as_str().unwrap_or_default().to_owned();
+        let title = format!("Modifier: {} {}", text(&modifier["block_name"]), text(&modifier["label"]));
+        let empty = Vec::new();
+        let fields = modifier["fields"].as_array().unwrap_or(&empty);
+        let set = |key: &str, value: u64| ("modifier.set", json!({ "field": key, "value": value }));
+        let mut open = true;
+        let window = egui::Window::new(title).id(egui::Id::new("modifier")).collapsible(false).resizable(false);
+        window.open(&mut open).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                for field in fields.iter().filter(|field| field["kind"] == "step") {
+                    let (key, raw) = (text(&field["key"]), field["value"].as_u64().unwrap_or(0));
+                    ui.label(RichText::new(text(&field["label"])).small().color(theme::TEXT_DIM));
+                    if ui.add_enabled(raw > 0, egui::Button::new("◀").small()).clicked() {
+                        actions.push(set(&key, raw - 1));
+                    }
+                    ui.label(RichText::new(text(&field["text"])).monospace());
+                    let last = field["max"].as_u64().unwrap_or(0);
+                    if ui.add_enabled(raw < last, egui::Button::new("▶").small()).clicked() {
+                        actions.push(set(&key, raw + 1));
+                    }
+                    ui.separator();
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    let knobs: Vec<&Value> = fields.iter().filter(|field| field["kind"] == "knob").collect();
+                    for row in knobs.chunks(MODIFIER_ROW) {
+                        ui.horizontal(|ui| {
+                            for field in row {
+                                let key = text(&field["key"]);
+                                // What was just set, until the unit has answered.
+                                let asked = self.unconfirmed.get(&modifier_key(&key)).copied();
+                                let raw = asked.or(field["value"].as_u64()).unwrap_or(0) as u32;
+                                let max = field["max"].as_u64().unwrap_or(1) as u32;
+                                let (label, shown) = (text(&field["label"]), text(&field["text"]));
+                                if let Some(knob::Change::Raw(value)) =
+                                    knob::knob(ui, knob::CELL, &label, &shown, raw, max)
+                                {
+                                    actions.push(set(&key, value.into()));
+                                }
+                            }
+                        });
+                    }
+                });
+                if modifier["graph"].is_object() {
+                    Self::modifier_graph(ui, Vec2::splat(MODIFIER_GRAPH), &modifier["graph"]);
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if modifier["attached"] == true {
+                    if ui.button(RichText::new("Remove modifier").color(theme::DANGER)).clicked() {
+                        actions.push(("modifier.remove", Value::Null));
+                    }
+                } else {
+                    let hint = "No source yet: step Source to a controller to attach the modifier.";
+                    ui.label(RichText::new(hint).small().color(theme::TEXT_DIM));
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new("The curve is a sketch of the settings").small().color(theme::TEXT_DIM));
+                });
+            });
+            if !view.state.simulated {
+                let caution = "Changing a modifier has not yet been confirmed on a unit. Save your work first.";
+                ui.label(RichText::new(caution).small().color(theme::DANGER));
+            }
+        });
+        if !open {
+            actions.push(("modifier.close", Value::Null));
+        }
+    }
+
+    /// The box a scene's name is typed in.
+    fn scene_rename_window(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        let Some((scene, mut name)) = self.scene_rename.take() else { return };
+        let mut keep = true;
+        let window = egui::Window::new(format!("Name scene {}", scene + 1)).collapsible(false).resizable(false);
+        window.anchor(Align2::CENTER_TOP, [0.0, 110.0]).show(ctx, |ui| {
+            let field = egui::TextEdit::singleline(&mut name).desired_width(240.0).char_limit(24).hint_text("no name");
+            let edit = ui.add(field);
+            if std::mem::take(&mut self.scene_rename_needs_focus) {
+                edit.request_focus();
+            }
+            let entered = edit.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            ui.label(
+                RichText::new("Kept on this computer; the unit has no scene names.").small().color(theme::TEXT_DIM),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    keep = false;
+                }
+                if ui.button("OK").clicked() || entered {
+                    actions.push(("scene.rename", json!({ "scene": scene + 1, "name": name.trim() })));
+                    keep = false;
+                }
+            });
+        });
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            keep = false;
+        }
+        if keep {
+            self.scene_rename = Some((scene, name));
+        }
+    }
+
     fn block_editor(&mut self, ui: &mut egui::Ui, block: u16, actions: &mut Vec<Action>) {
         if self.page_block != Some(block) {
             (self.page_block, self.page) = (Some(block), 0);
@@ -1329,6 +1610,8 @@ impl Shell {
             });
         });
         ui.separator();
+        Self::looper_bar(ui, &editor["looper"]);
+        Self::tone_match_steps(ui, &editor["tone_match"], actions);
 
         self.page = self.page.min(pages.len().saturating_sub(1));
         let Some(page) = pages.get(self.page) else {
@@ -1394,7 +1677,8 @@ impl Shell {
         let pages = editor["pages"].as_array().map(Vec::as_slice).unwrap_or_default();
         let page = pages.get(self.page.min(pages.len().saturating_sub(1)));
         let rows = page.map_or(1.0, |page| PageShape::of(page).rows());
-        let wanted = EDITOR_CHROME + rows * knob::CELL.y;
+        let strip = if editor["looper"].is_object() || editor["tone_match"].is_object() { STRIP } else { 0.0 };
+        let wanted = EDITOR_CHROME + strip + rows * knob::CELL.y;
         wanted.min(ctx.content_rect().height() * EDITOR_SHARE)
     }
 
@@ -1527,6 +1811,8 @@ impl Shell {
             self.tuner_window(ctx, &mut actions);
         }
         if self.view.connected {
+            self.modifier_window(ctx, &mut actions);
+            self.scene_rename_window(ctx, &mut actions);
             if self.library.presets_open {
                 self.preset_manager(ctx, &mut actions);
             }
@@ -1584,6 +1870,8 @@ mod tests {
         let drive = json!({ "block": 106, "param": 1, "value": 5 });
         assert_eq!(value_key("param.set", &drive).as_deref(), Some("106/1"));
         assert_eq!(value_key("tempo.set", &json!({ "bpm": 120 })).as_deref(), Some(TEMPO_KEY));
+        let slope = json!({ "field": "slope", "value": 9 });
+        assert_eq!(value_key("modifier.set", &slope), Some(modifier_key("slope")));
         // Anything else is sent as often as it is asked for.
         assert_eq!(value_key("param.set_displayed", &drive), None);
         assert_eq!(value_key("grid.connect", &json!({ "column": 1, "row": 0, "from_row": 0 })), None);

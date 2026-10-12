@@ -29,7 +29,13 @@ separate sessions or with separate people. The preset and cabinet library
 (spec sections 4.5 and 4.6) was added the same way as the first version: one
 agent session read the message-layout tables recorded from the original,
 confirmed what each message means with read-only requests to a unit, wrote
-the spec sections, and then wrote the code from them. Anyone who wants stricter
+the spec sections, and then wrote the code from them. The scene and block
+tools, modifiers, the looper position and the Tone Match steps (spec sections
+4.7 and 4.8) were added by one agent session that did not open the analysis
+material at all: it worked from the spec, from the identifier tables already
+in this repository, from public documentation of the messages (tagged `[P]`)
+and from read-only requests to a unit (tagged `[H]`). That is why resetting a
+block is still missing: nothing in those sources says how. Anyone who wants stricter
 provenance can have a fresh implementer, who has seen only `spec/`,
 re-derive `axegrid-sysex` and `axegrid-model` and compare.
 

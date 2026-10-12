@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use axegrid_model::{blocks, defs, grid, layouts, params};
 use axegrid_sysex::codec::{put_uint, Reader};
-use axegrid_sysex::{function, Dump, DumpKind, Frame, Model};
+use axegrid_sysex::{function, Dump, DumpKind, Frame, Model, MODIFIER_FIELDS};
 
 use crate::session::Transport;
 
@@ -17,6 +17,8 @@ const STATUS_INVALID_BLOCK: u8 = 1;
 const STATUS_NOT_A_LIST: u8 = 27;
 /// The choices every list of the simulator offers.
 const SIM_CHOICES: [&str; 3] = ["FIRST", "SECOND", "THIRD"];
+/// The modifier sources the simulator offers; the first is none.
+const SIM_SOURCES: [&str; 4] = ["NONE", "SIM LFO", "SIM ENVELOPE", "SIM PEDAL"];
 /// Effect type of the cab block, and its parameters that pick a cab from the cab list.
 const SIM_CAB: u8 = 6;
 const SIM_CAB_PICKERS: [&str; 2] = ["CABINET_TYPEL", "CABINET_TYPER"];
@@ -32,6 +34,10 @@ const TUNER_CONTROLLER: u8 = 15;
 const TUNER_BURST: usize = 3;
 /// Looper transport controllers, in the order of their status bits.
 const LOOPER_CONTROLLERS: [u8; 6] = [28, 29, 30, 31, 32, 120];
+/// Status bits of a loop that is recording or playing, and how far it
+/// moves, in hundredths of its length, per message the simulator receives.
+const LOOPER_MOVING: u8 = 0b11;
+const LOOPER_STEP: u8 = 7;
 
 /// Where the user cabs start in the cab list, and how many there are.
 const SIM_FACTORY_CABS: u16 = 189;
@@ -95,10 +101,14 @@ pub struct SimDevice {
     presets: Vec<Preset>,
     current: usize,
     scene: u8,
-    values: BTreeMap<(usize, u16, u16), u16>,
-    bypassed: BTreeMap<(usize, u16), bool>,
-    on_y: BTreeMap<(usize, u16), bool>,
+    /// Parameter values by preset, block, parameter set (`true` is Y) and parameter.
+    values: BTreeMap<(usize, u16, bool, u16), u16>,
+    /// Bypass and X/Y belong to a scene: by preset, scene and block.
+    bypassed: BTreeMap<(usize, u8, u16), bool>,
+    on_y: BTreeMap<(usize, u8, u16), bool>,
     outbox: VecDeque<Vec<u8>>,
+    /// Modifier fields by preset, block and parameter.
+    modifiers: BTreeMap<(usize, u16, u16), [u16; MODIFIER_FIELDS as usize]>,
     /// User cabs that hold something: name and data words.
     cabs: BTreeMap<u16, Vec<u32>>,
     /// An upload in progress: its messages so far, and the cab slot it names.
@@ -106,11 +116,15 @@ pub struct SimDevice {
     upload_slot: Option<u16>,
     /// A preset upload replaced the edit buffer.
     uploaded: bool,
+    /// Something in the edit buffer was changed.
+    edited: bool,
     /// Presets written with a store message, as `(slot, name)`.
     pub stored: Vec<(u16, String)>,
     /// Looper transport state, one bit per button, and whether it is reported.
     looper: u8,
     looper_watched: bool,
+    /// How far the loop has played, 0 to 99.
+    looper_position: u8,
     /// Number of messages received, for tests.
     pub received: usize,
 }
@@ -141,6 +155,30 @@ fn cab_slot(model: Model, payload: &[u8]) -> Option<u16> {
     }
 }
 
+/// The fields of a modifier nobody has touched: no source, the whole
+/// range, a straight line.
+fn modifier_defaults(block: u16, param: u16) -> [u16; MODIFIER_FIELDS as usize] {
+    const TOP: u16 = 65534;
+    const HALF: u16 = 32767;
+    [0, 0, TOP, 0, HALF, TOP, HALF, 655, block, param, 0, 0, 0, HALF, HALF]
+}
+
+/// A modifier field as the simulator displays it.
+fn modifier_text(field: u16, raw: u16) -> String {
+    let share = f32::from(raw) / 65534.0;
+    match field {
+        0 => SIM_SOURCES.get(usize::from(raw)).copied().unwrap_or("?").to_owned(),
+        1 | 2 => format!("{:.2}", f32::from(raw) / SIM_DISPLAY_SCALE),
+        3..=6 | 12 => format!("{:.1} %", share * 100.0),
+        7 => format!("{:.0} ms", share * 1000.0),
+        // The block and the parameter the modifier belongs to carry no text.
+        8 | 9 => String::new(),
+        10 | 11 => if raw == 0 { "OFF" } else { "ON" }.to_owned(),
+        13 => format!("{:.3}", share * 2.0),
+        _ => format!("{:.1} %", share * 200.0 - 100.0),
+    }
+}
+
 impl Default for SimDevice {
     fn default() -> Self {
         Self::new(Model::AxeFx2Xl)
@@ -162,13 +200,16 @@ impl SimDevice {
             bypassed: BTreeMap::new(),
             on_y: BTreeMap::new(),
             outbox: VecDeque::new(),
+            modifiers: BTreeMap::new(),
             cabs: BTreeMap::from([(0, cab_words("Sim 4x12", 7))]),
             incoming: Vec::new(),
             upload_slot: None,
             uploaded: false,
+            edited: false,
             stored: Vec::new(),
             looper: 0,
             looper_watched: false,
+            looper_position: 0,
             received: 0,
         }
     }
@@ -255,7 +296,34 @@ impl SimDevice {
             _ if blocks::by_id(block).is_some_and(|b| layouts::is_stepped(b.effect_type, param)) => 0,
             _ => 0x8000,
         };
-        self.values.get(&(self.current, block, param)).copied().unwrap_or(default)
+        if param == params::SHARED_BYPASS {
+            return u16::from(self.is_bypassed(block));
+        }
+        self.values.get(&(self.current, block, self.is_on_y(block), param)).copied().unwrap_or(default)
+    }
+
+    fn is_bypassed(&self, block: u16) -> bool {
+        self.bypassed.get(&(self.current, self.scene, block)).copied().unwrap_or(false)
+    }
+
+    fn is_on_y(&self, block: u16) -> bool {
+        self.on_y.get(&(self.current, self.scene, block)).copied().unwrap_or(false)
+    }
+
+    fn set_value(&mut self, block: u16, param: u16, value: u16) {
+        if param == params::SHARED_BYPASS {
+            self.bypassed.insert((self.current, self.scene, block), value != 0);
+        } else {
+            self.values.insert((self.current, block, self.is_on_y(block), param), value);
+        }
+        self.edited = true;
+    }
+
+    /// Reports the looper's buttons and position, if anyone is watching.
+    fn report_looper(&mut self) {
+        if self.looper_watched {
+            self.reply(function::LOOPER_STATUS, vec![self.looper, self.looper_position]);
+        }
     }
 
     /// Whether the parameter picks a cab by its position in the cab list.
@@ -410,8 +478,7 @@ impl SimDevice {
             BLOCK_STATES => {
                 let mut message = vec![0xF0, 0x00, 0x01, 0x74, self.model.byte(), BLOCK_STATES];
                 for block in self.presets[self.current].blocks() {
-                    let bypassed = self.bypassed.get(&(self.current, block)).copied().unwrap_or(false);
-                    let on_y = self.on_y.get(&(self.current, block)).copied().unwrap_or(false);
+                    let (bypassed, on_y) = (self.is_bypassed(block), self.is_on_y(block));
                     let flags = u32::from(!on_y) << 1 | u32::from(!bypassed);
                     put_uint(&mut message, u32::from(block) << 24 | flags, 5);
                 }
@@ -429,7 +496,7 @@ impl SimDevice {
             }
             CPU_LOAD => self.reply(CPU_LOAD, vec![42]),
             MIDI_CHANNEL => self.reply(MIDI_CHANNEL, vec![0]),
-            PRESET_EDITED => self.reply(PRESET_EDITED, vec![u8::from(self.uploaded || !self.values.is_empty())]),
+            PRESET_EDITED => self.reply(PRESET_EDITED, vec![u8::from(self.uploaded || self.edited)]),
             PARAM => {
                 let (block, param, value, set) = (r.u16(2)?, r.u16(2)?, r.u16(3)?, r.u8()?);
                 if !self.in_preset(block) {
@@ -437,10 +504,7 @@ impl SimDevice {
                     return Some(());
                 }
                 if set != 0 {
-                    self.values.insert((self.current, block, param), value);
-                    if param == params::SHARED_BYPASS {
-                        self.bypassed.insert((self.current, block), value != 0);
-                    }
+                    self.set_value(block, param, value);
                 }
                 let payload = self.param_payload(block, param);
                 self.reply(PARAM, payload);
@@ -453,7 +517,7 @@ impl SimDevice {
                 }
                 // The simulator shows every value as raw / 6553.4.
                 let raw = (shown * SIM_DISPLAY_SCALE).round().clamp(0.0, 65534.0) as u16;
-                self.values.insert((self.current, block, param), raw);
+                self.set_value(block, param, raw);
                 let payload = self.param_payload(block, param);
                 self.reply(PARAM, payload);
             }
@@ -501,6 +565,33 @@ impl SimDevice {
                 }
                 self.reply(PARAM_INFO, payload);
             }
+            MODIFIER => {
+                let (block, param, field) = (r.u16(2)?, r.u16(2)?, r.u16(2)?);
+                let (value, set) = (r.u16(3)?, r.u8()?);
+                // Lists and switches take no modifier; a real unit must never be asked past the last field.
+                let stepped = blocks::by_id(block).is_some_and(|b| layouts::is_stepped(b.effect_type, param));
+                if !self.in_preset(block) || stepped || field >= MODIFIER_FIELDS {
+                    self.status(MODIFIER, STATUS_INVALID_BLOCK);
+                    return Some(());
+                }
+                let key = (self.current, block, param);
+                let fields = self.modifiers.entry(key).or_insert_with(|| modifier_defaults(block, param));
+                let slot = &mut fields[usize::from(field)];
+                if set != 0 {
+                    // A source past the last one is the last one.
+                    *slot = if field == 0 { value.min(SIM_SOURCES.len() as u16 - 1) } else { value };
+                    self.edited = true;
+                }
+                let raw = *slot;
+                let mut payload = Vec::new();
+                for part in [block, param, field] {
+                    put_uint(&mut payload, part.into(), 2);
+                }
+                put_uint(&mut payload, raw.into(), 3);
+                payload.extend_from_slice(modifier_text(field, raw).as_bytes());
+                payload.push(0);
+                self.reply(MODIFIER, payload);
+            }
             BLOCK_XY => {
                 let (block, y, set) = (r.u16(2)?, r.u8()?, r.u8()?);
                 if !self.in_preset(block) {
@@ -508,9 +599,10 @@ impl SimDevice {
                     return Some(());
                 }
                 if set != 0 {
-                    self.on_y.insert((self.current, block), y != 0);
+                    self.on_y.insert((self.current, self.scene, block), y != 0);
+                    self.edited = true;
                 }
-                let on_y = self.on_y.get(&(self.current, block)).copied().unwrap_or(false);
+                let on_y = self.is_on_y(block);
                 let mut payload = Vec::new();
                 put_uint(&mut payload, block.into(), 2);
                 payload.push(u8::from(on_y));
@@ -527,14 +619,13 @@ impl SimDevice {
                     self.presets.push(edit);
                 }
                 self.uploaded = false;
+                self.edited = false;
                 self.status(STORE_PRESET, 0);
             }
             LOOPER_STATUS => {
                 self.looper_watched = r.u8()? != 0;
                 self.status(LOOPER_STATUS, 0);
-                if self.looper_watched {
-                    self.reply(LOOPER_STATUS, vec![self.looper, 0]);
-                }
+                self.report_looper();
             }
             DISCONNECT => self.status(DISCONNECT, 0),
             other => self.status(other, STATUS_INVALID_BLOCK),
@@ -561,14 +652,20 @@ impl Transport for SimDevice {
             if let (0xB0, Some(bit)) = (status & 0xF0, button) {
                 let mask = 1 << bit;
                 self.looper = if value >= 64 { self.looper | mask } else { self.looper & !mask };
-                if self.looper_watched {
-                    self.reply(function::LOOPER_STATUS, vec![self.looper, 0]);
+                if self.looper & LOOPER_MOVING == 0 {
+                    self.looper_position = 0;
                 }
+                self.report_looper();
             }
             return Ok(());
         }
         if let Ok(frame) = Frame::parse(message) {
             let function = frame.function;
+            // Time passes for a running loop whenever the device is spoken to.
+            if self.looper & LOOPER_MOVING != 0 {
+                self.looper_position = (self.looper_position + LOOPER_STEP) % 100;
+                self.report_looper();
+            }
             if self.handle(frame).is_none() {
                 self.status(function, STATUS_INVALID_BLOCK);
             }

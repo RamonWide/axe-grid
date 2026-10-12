@@ -59,7 +59,12 @@ Still unverified on hardware:
 | Library on a Mark I/II or an XL+ | Wrong slot counts; cab numbers laid out differently | `library.rs`, `transfer.rs` |
 | Tuner note numbering (0 = A) and centre (63) | Wrong note name or needle | `Engine::tuner_json` |
 | Tuner and CC 15 when the owner remapped the tuner controller | Another function is triggered | `live_cmds.rs` |
-| `07` modifiers | Not implemented | `message.rs` |
+| `07` with set = 1: attaching, editing and removing a modifier | A field is set wrongly, or the unit stops answering as it did for a query past the last field (below) | `modifier_cmds.rs` |
+| Modifier source numbering, and the answer for a parameter that takes no modifier | The Source stepper shows nothing useful, or an error that says little | `modifier_cmds.rs` |
+| `23` position byte | The looper's bar shows the wrong place | `Reply::LooperStatus` |
+| Ending a Tone Match capture and `EQMATCH_MATCH` | The steps do not do what they say | `live_cmds.rs` |
+| `scene.paste`, `block.paste`, `block.copy_x_to_y` on a unit | Built from messages that are each confirmed, but the sequences have only run against the simulator | `scene_cmds.rs`, `block_cmds.rs` |
+| Blocks without X and Y sets | `block.copy` with both sets expects a refusal of `11`; what a unit answers is not known | `block_cmds.rs` |
 | Choice lists and the cab list over a 5-pin MIDI cable | Slow, or a timeout on the longest list (6 s is allowed) | `Session::param_strings`, `lists_cmds.rs` |
 | Undo of a grid edit that involves shunts | A shunt ID in two cells; the code lifts shunts first and is tested against the simulator only | `Engine::rebuild_grid` |
 | Undo of an edit made in another scene or on the other X/Y set | The wrong scene's bypass or X/Y is changed | `Engine::return_to` |
@@ -101,21 +106,41 @@ state reported back, Tone Match "Start Both" (both captures read back as
 on), and the Parametric EQ curve following its knobs. Tone Match "Match"
 and the looper's other five buttons were not pressed.
 
+## Hardware incident (2026-10-12, not resolved in the firmware)
+
+While the modifier fields were being read from a maintainer's Axe-Fx II XL
+(firmware 32.00, over USB) with function `07` and set = 0, the unit answered
+selectors 0 to 14 and then stopped answering everything, the probe included,
+after selector 15 was asked for. Selector 15 is the end marker of the
+modifier table, not a field. Nothing had been set or stored; a power cycle
+brought the unit back. On the computer, Windows' MIDI service could not open
+any port afterwards and had to be restarted.
+
+**A query is not harmless by being a query.** Never send an index (modifier
+selector, parameter, block, cab or preset number) outside what the device
+has defined. `Request::Modifier` limits the selector to 14 and
+`Session::modifier` refuses anything above it; keep both. When probing a
+range on a unit, send one value per run, with a timeout, so that a silence
+is known at once and attributed to the right message.
+
 ## Missing compared with the original editor
 
 Not implemented at all:
 
-1. **Modifiers**: attaching a controller (LFO, envelope, pedal, scene
-   controller) to a parameter, the modifier dialog and its curve.
+1. **Resetting a block to its defaults.** How the original does it is not in
+   the specification, and no sequence of known messages does it: a block
+   taken out of the grid and put back keeps its values. Also missing here:
+   the block library, global blocks, "edit block" recall.
 2. **Bank and bundle files, swapping two presets, the block library and
    global blocks, snapshots.** (The preset browser, copy, import, export and
    backup are there; see "Partly there".)
 3. **Cabinet tools beyond the list**: converting `.wav` and `.ir` files,
    the scratchpad slots, renaming or clearing a slot, mixing IRs.
-4. **Scene tools**: copy and paste a scene, swap scenes, scene names,
-   scene revert, per-scene X/Y copy, "set all blocks to X/Y".
-5. **Block tools**: copy and paste a block or its X/Y state, reset a block
-   to defaults, "edit block" recall, block undo.
+4. **Scene tools**: swap scenes, scene revert, "set all blocks to X/Y".
+5. **Modifier extras**: a mark on the controls that have a modifier, the
+   list of every modifier in the preset, a list of sources to pick from
+   (the device names a source only once it is chosen), and the device's own
+   curve.
 6. **Grid tools**: move or shift a whole row or column, insert/delete a
    column, clear the grid, feedback loops shown on the grid.
 7. **Measured graphs**: the Tone Match spectrum, and the controllers' LFO
@@ -142,9 +167,25 @@ Partly there:
   speaker curve in particular is a sketch: its two resonance amounts are
   drawn as decibels, which the unit does not promise.
 
-- **Tone Match**: its two buttons set the capture and match parameters;
-  the capture workflow and the spectrum display are missing.
-- **Looper**: transport buttons and their state work; no position bar.
+- **Modifiers**: right-click a knob or a fader to open its modifier; step
+  the source to attach or remove it, turn the thirteen fields, and see a
+  curve. Only reading the fields is confirmed on a unit. The curve is this
+  project's own sketch from start, middle, end, slope, scale and offset; the
+  device's formula is not known, and damping is not drawn.
+- **Scenes**: names, copy and paste. The device stores no scene names, so
+  they live in a file on the computer (`scene-names.json` in the Axe-Grid
+  data folder), by model and preset slot, and show only while the preset in
+  that slot keeps its name. They do not travel with an exported preset, and
+  a preset renamed on the unit's front panel loses sight of them.
+- **Block copy and paste** carries every parameter the device lists for the
+  block, not its modifiers. A paste sets only what differs, the type first.
+  Copying both X and Y switches the block to its other set and back, which
+  can be heard.
+- **Tone Match**: the three steps (capture the reference, capture your own
+  sound, match) with their state read back twice a second; the spectrum
+  display is missing.
+- **Looper**: transport buttons, their state and a bar for the position;
+  the position byte is from public documentation.
 - **Graphic EQ and other fader pages**: the faders shown are the ones of
   the chosen type (before, a type whose name said more than "10 Band" showed
   none).
@@ -160,7 +201,8 @@ Partly there:
   original editor's cache file is no longer needed; `definitions.load` still
   reads one for `definitions.describe`.
 - **Undo and redo** cover parameters, bypass, X/Y, the grid and the preset
-  name. Not covered: scene changes, the looper, and everything that writes to
+  name, modifier fields, and a pasted scene or block as one step each. Not
+  covered: scene changes, scene names, the looper, Tone Match captures, and everything that writes to
   the unit's memory (save, copy, cab import), which cannot be taken back. A
   change made on the unit's front panel is not in the history, so an undo
   after one restores what the editor last knew. The history is lost when a
@@ -180,5 +222,10 @@ Partly there:
 - Reading the names of all presets and cabs, and a backup, run a few
   requests at a time from the window; from the CLI one call does all of it
   and blocks until it is done.
-- The `66` currently registered commands cover a fraction of the original's
+- The simulator offers four modifier sources, refuses a modifier on every
+  list and switch, and moves a playing loop only when it is spoken to. None
+  of that is how a unit behaves.
+- The window's new parts (scene menu, modifier window, looper bar, Tone
+  Match steps) have no automated test; the shell's tests cover its helpers.
+- The `83` currently registered commands cover a fraction of the original's
   surface; the original has roughly 56 distinct device messages.

@@ -74,8 +74,10 @@ and runs commands where it is called.
 
 The device holds the truth, so the history does not copy presets. Each
 entry records what one edit changed on the device: a parameter's raw value
-before and after, an X/Y state, the preset name, or the grid before and
-after. Undo sends the old value back; for the grid it places blocks and
+before and after, an X/Y state, the preset name, a modifier field, or the
+grid before and after. A pasted block is remembered as its settings before
+and after, and a pasted scene as the group of changes it made, undone in
+reverse. Undo sends the old value back; for the grid it places blocks and
 draws cables until the device's grid matches the remembered one, lifting
 shunts first so that no shunt ID is ever in two cells. Edits to one
 parameter that follow each other within 0.6 s are one entry. The history
@@ -83,6 +85,26 @@ belongs to the edit buffer: loading a preset, importing one or losing the
 device empties it. Commands that edit the preset record through
 `Engine::record_param`, `record_xy`, `record_rename` and `recording_grid`
 (`history_cmds.rs`).
+
+## What lives on the computer
+
+Almost nothing: the device holds the preset. The exceptions are the two
+clipboards (`block.copy`, `scene.copy`), which last as long as the engine,
+and scene names, which the device has no place for. A front end a person
+uses builds its engine with `Engine::for_this_computer()`, which keeps them
+in `scene-names.json` under the system's application-data folder; an engine
+made with `Engine::new()`, as the tests make it, writes nothing.
+
+## Modifiers
+
+A modifier belongs to a parameter and has thirteen fields the editor shows
+(`modifier_cmds.rs`). `modifier.open` reads them and keeps them as the open
+modifier, which `View::modifier` hands to the window; the other modifier
+commands act on the open one unless told otherwise. The device names a
+source only when a modifier uses it, so the engine collects the names it has
+seen. The selector is range-checked twice on the way out, in the request and
+in the session, because a unit asked for a field past the last one stops
+answering (see [gaps](gaps.md)).
 
 ## Choice lists
 

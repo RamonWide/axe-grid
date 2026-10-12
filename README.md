@@ -39,8 +39,8 @@
 
 > [!IMPORTANT]
 > **Status: early alpha.** Axe-Grid edits presets on real hardware today, but it is not yet a
-> replacement for the original editor: there are no modifiers, no global settings and no
-> undo. It has been tested on one Axe-Fx II XL (firmware 32.00) on Windows; the macOS and Linux
+> replacement for the original editor: modifiers are new and not yet confirmed on a unit, and
+> there are no global settings and no meters. It has been tested on one Axe-Fx II XL (firmware 32.00) on Windows; the macOS and Linux
 > builds compile from the same code but nobody has run them against a unit yet.
 > [ROADMAP.md](ROADMAP.md) says exactly where things stand. Back up your presets before pointing
 > any new editor at an instrument you depend on.
@@ -183,12 +183,14 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
   </tr>
 </table>
 
-Not there yet: modifiers, scene and block copy/paste, bank files, meters and global settings.
+New and still to be confirmed on a unit: modifiers, scene and block copy and paste, the looper's
+position bar and the Tone Match steps. Not there yet: resetting a block, bank files, meters and
+global settings.
 The full list, ranked, is in [ROADMAP.md](ROADMAP.md).
 
 ## Built for agents
 
-Every menu item, button, knob and shortcut runs a command from one registry of 66 commands
+Every menu item, button, knob and shortcut runs a command from one registry of 83 commands
 ([`docs/commands.md`](docs/commands.md)). The window, the CLI, the JSON control channel and the MCP
 server all call the same commands, so anything you can click, a script or an AI agent can do too.
 
@@ -219,7 +221,7 @@ you are looking at. See [`docs/control-protocol.md`](docs/control-protocol.md) a
   window.
 - **Never crash:** no `unsafe`, and no `unwrap`, `expect` or `panic!` outside tests. A device that
   answers garbage, or not at all, produces an error message, not a crash.
-- **Tested without hardware:** 166 tests run against the simulated device, including hostile
+- **Tested without hardware:** 187 tests run against the simulated device, including hostile
   command parameters and literal bytes captured from a real unit.
 - **Clean-room:** written from a functional specification and observed behaviour. No code, artwork,
   fonts or skins from the original editor ([`docs/clean-room.md`](docs/clean-room.md) lists

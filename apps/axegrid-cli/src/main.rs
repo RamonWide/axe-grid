@@ -57,7 +57,7 @@ fn backend(options: &Options) -> Result<Box<dyn Backend>, String> {
             let token = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
             Box::new(BridgeClient::connect(address, token.trim()).map_err(|e| e.to_string())?)
         }
-        None => Box::new(Headless::default()),
+        None => Box::new(Headless { engine: axegrid_engine::Engine::for_this_computer() }),
     };
     if options.simulator {
         let connect = json!({ "id": "device.connect_simulator" });

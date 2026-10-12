@@ -42,6 +42,23 @@ pub(crate) enum Edit {
         before: String,
         after: String,
     },
+    /// One field of the modifier on a parameter.
+    Modifier {
+        address: ParamAddress,
+        field: u16,
+        before: u16,
+        after: u16,
+    },
+    /// Many parameters of one block at once, as a paste makes them:
+    /// `(parameter, raw value)` pairs before and after.
+    Block {
+        block: u16,
+        xy: Option<XyState>,
+        before: Vec<(u16, u16)>,
+        after: Vec<(u16, u16)>,
+    },
+    /// Several changes made by one command, in the order they were made.
+    Group(Vec<Edit>),
 }
 
 #[derive(Debug, Clone)]
@@ -92,6 +109,22 @@ impl History {
                 }
             }
         }
+        // A modifier's knob being turned is one edit too.
+        if let (Some(last), Edit::Modifier { address, field, after, .. }) = (self.done.last_mut(), &entry.edit) {
+            let recent = entry.at.duration_since(last.at) < MERGE_WINDOW;
+            if let (true, Edit::Modifier { address: same, field: same_field, after: last_after, before }) =
+                (recent, &mut last.edit)
+            {
+                if same == address && same_field == field {
+                    *last_after = *after;
+                    last.at = entry.at;
+                    if before == last_after {
+                        self.done.pop();
+                    }
+                    return;
+                }
+            }
+        }
         self.done.push(entry);
         if self.done.len() > MAX_EDITS {
             self.done.remove(0);
@@ -115,7 +148,11 @@ fn param_label(address: ParamAddress, after: u16) -> String {
 }
 
 impl Engine {
-    fn record(&mut self, label: String, edit: Edit) {
+    /// Remembers an edit a command has made. A group of nothing is nothing.
+    pub(crate) fn record(&mut self, label: String, edit: Edit) {
+        if matches!(&edit, Edit::Group(edits) if edits.is_empty()) {
+            return;
+        }
         let entry = Entry { label, scene: self.state.preset.scene, at: Instant::now(), edit };
         self.history.push(entry);
     }
@@ -242,10 +279,14 @@ impl Engine {
 
     /// Sends the device back to before an edit (`undo`) or forward to after it.
     fn restore(&mut self, entry: &Entry, undo: bool) -> Result<(), CommandError> {
-        match &entry.edit {
+        self.restore_edit(&entry.edit, entry.scene, undo)
+    }
+
+    fn restore_edit(&mut self, edit: &Edit, scene: u8, undo: bool) -> Result<(), CommandError> {
+        match edit {
             Edit::Param { address, before, after, xy } => {
                 let bypass = address.param == params::SHARED_BYPASS;
-                self.return_to(entry.scene, address.block, *xy, bypass)?;
+                self.return_to(scene, address.block, *xy, bypass)?;
                 let value = self.session()?.set_param(*address, if undo { *before } else { *after })?;
                 self.remember(&value);
                 if bypass {
@@ -256,7 +297,7 @@ impl Engine {
                 }
             }
             Edit::Xy { block, before, after } => {
-                self.return_to(entry.scene, *block, None, true)?;
+                self.return_to(scene, *block, None, true)?;
                 let state = if undo { *before } else { *after };
                 self.session()?.request(&Request::BlockXy(*block, Some(state)))?;
                 self.refresh_preset()?;
@@ -266,6 +307,23 @@ impl Engine {
                 let name = if undo { before } else { after };
                 self.session()?.request(&Request::SetPresetName(name.clone()))?;
                 self.refresh_preset()?;
+            }
+            Edit::Modifier { address, field, before, after } => {
+                self.session()?.set_modifier(*address, *field, if undo { *before } else { *after })?;
+            }
+            Edit::Block { block, xy, before, after } => {
+                self.return_to(scene, *block, *xy, false)?;
+                self.apply_values(*block, if undo { before } else { after })?;
+                if self.state.selected_block == Some(*block) {
+                    self.refresh_params()?;
+                }
+            }
+            Edit::Group(edits) => {
+                // Taken back in the reverse of the order they were made in.
+                let ordered: Vec<&Edit> = if undo { edits.iter().rev().collect() } else { edits.iter().collect() };
+                for edit in ordered {
+                    self.restore_edit(edit, scene, undo)?;
+                }
             }
         }
         Ok(())

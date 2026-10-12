@@ -40,8 +40,13 @@ fn rename(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
         return Err(CommandError::BadParam { name: "name", problem: "must be 1 to 32 characters".into() });
     }
     let before = engine.state.preset.name.clone();
+    let scenes = engine.scene_names_now();
     engine.session()?.request(&Request::SetPresetName(name.to_owned()))?;
     engine.refresh_preset()?;
+    // The scene names stay with the preset under its new name.
+    if scenes.iter().any(|scene| !scene.is_empty()) {
+        engine.carry_scene_names(scenes, engine.state.preset.number);
+    }
     engine.record_rename(before);
     Ok(summary(engine))
 }
@@ -51,7 +56,12 @@ fn store(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
         Some(number) => number as u16,
         None => engine.state.preset.number,
     };
+    let scenes = engine.scene_names_now();
     engine.session()?.request(&Request::StorePreset(number))?;
+    if number != engine.state.preset.number {
+        // The slot holds this preset now, scene names and all.
+        engine.carry_scene_names(scenes, number);
+    }
     let name = engine.state.preset.name.clone();
     engine.state.preset_names.insert(number, name);
     Ok(json!({ "stored_to": number }))

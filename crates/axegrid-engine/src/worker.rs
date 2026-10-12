@@ -22,6 +22,11 @@ pub struct View {
     /// The selected block's controls; see [`Engine::editor`].
     pub editor: Value,
     pub tuner: Value,
+    /// The modifier that is open; `null` when none is.
+    pub modifier: Value,
+    /// The block last copied, as `{block, name, sets}`; `null` when none was.
+    pub block_clip: Value,
+    pub scene_copied: bool,
     /// Choice lists of the selected block that are still to be read.
     pub lists_missing: usize,
     /// What Undo and Redo would act on.
@@ -46,6 +51,9 @@ impl Engine {
             connected: self.is_connected(),
             editor: self.editor(),
             tuner: self.tuner_json(),
+            modifier: self.modifier_json(),
+            block_clip: self.block_clip_json(),
+            scene_copied: self.scene_clip.is_some(),
             lists_missing: self.lists_missing(),
             next_undo: self.history.next_undo().map(str::to_owned),
             next_redo: self.history.next_redo().map(str::to_owned),

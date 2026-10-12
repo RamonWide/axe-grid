@@ -2,6 +2,7 @@
 //! registry. Every front end (UI, CLI, control channel, MCP) acts only by
 //! running commands from [`registry`].
 
+mod block_cmds;
 pub mod command;
 mod device_cmds;
 mod edit_cmds;
@@ -11,7 +12,9 @@ mod history_cmds;
 mod library_cmds;
 mod lists_cmds;
 mod live_cmds;
+mod modifier_cmds;
 mod preset_cmds;
+mod scene_cmds;
 pub mod worker;
 
 use std::collections::BTreeMap;
@@ -49,9 +52,12 @@ pub struct State {
     pub tempo: Option<u16>,
     /// Tempo beats the device has announced since connecting.
     pub beats: u64,
-    /// What the looper is doing, one bit per transport button, once the
-    /// device has been asked to report it.
-    pub looper: Option<u8>,
+    /// What the looper is doing, its buttons and how far the loop has
+    /// played, once the device has been asked to report it.
+    pub looper: Option<axegrid_sysex::LooperState>,
+    /// Names given on this computer to the eight scenes of the current
+    /// preset; empty where a scene has none.
+    pub scene_names: Vec<String>,
     /// Names of stored presets read so far, by slot.
     pub preset_names: BTreeMap<u16, String>,
     /// Names of user cabs read so far, by cab number counted from 1.
@@ -71,6 +77,8 @@ pub struct TunerReading {
 const NOTE_NAMES: [&str; 12] = ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"];
 /// Tuner reading that means "in tune".
 const TUNER_CENTER: i32 = 63;
+/// Effect type of the looper.
+const LOOPER: u8 = 38;
 /// Controls per row when a block has no page layout.
 const PLAIN_ROW: usize = 10;
 
@@ -86,6 +94,15 @@ pub struct Engine {
     history: history_cmds::History,
     /// When tempo.tap last ran.
     last_tap: Option<std::time::Instant>,
+    /// What block.copy and scene.copy last took.
+    block_clip: Option<block_cmds::BlockClip>,
+    scene_clip: Option<scene_cmds::SceneClip>,
+    /// Scene names, which live on this computer.
+    scene_names: scene_cmds::SceneNames,
+    /// The modifier the editor has open, and the names the device has
+    /// given its sources and switches.
+    modifier: Option<modifier_cmds::Open>,
+    modifier_seen: modifier_cmds::Seen,
 }
 
 /// All commands, in menu order.
@@ -96,9 +113,12 @@ pub fn registry() -> &'static [&'static CommandSpec] {
             device_cmds::COMMANDS,
             live_cmds::COMMANDS,
             preset_cmds::COMMANDS,
+            scene_cmds::COMMANDS,
             library_cmds::COMMANDS,
             history_cmds::COMMANDS,
             edit_cmds::COMMANDS,
+            block_cmds::COMMANDS,
+            modifier_cmds::COMMANDS,
             lists_cmds::COMMANDS,
             file_cmds::COMMANDS,
         ]
@@ -115,6 +135,30 @@ pub fn find(id: &str) -> Option<&'static CommandSpec> {
 impl Engine {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An engine that keeps what belongs on this computer (scene names) in
+    /// `folder`. Without one nothing is written and such things last only
+    /// as long as the engine.
+    pub fn with_data_dir(folder: &std::path::Path) -> Self {
+        Self { scene_names: scene_cmds::SceneNames::kept_in(folder), ..Self::default() }
+    }
+
+    /// An engine for a program a person uses: it keeps its data in
+    /// [`Self::default_data_dir`] when the system names one.
+    pub fn for_this_computer() -> Self {
+        Self::default_data_dir().map_or_else(Self::new, |folder| Self::with_data_dir(&folder))
+    }
+
+    /// The folder a desktop install keeps its data in, if the system names one.
+    pub fn default_data_dir() -> Option<std::path::PathBuf> {
+        let var = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty()).map(std::path::PathBuf::from);
+        let base = var("APPDATA").or_else(|| var("XDG_CONFIG_HOME")).or_else(|| {
+            var("HOME").map(|home| {
+                home.join(if cfg!(target_os = "macos") { "Library/Application Support" } else { ".config" })
+            })
+        })?;
+        Some(base.join("Axe-Grid"))
     }
 
     pub fn state(&self) -> &State {
@@ -154,6 +198,7 @@ impl Engine {
         // The history is that of one edit buffer.
         if self.session.is_none() || self.state.preset.number != preset {
             self.history.clear();
+            self.modifier = None;
         }
         result
     }
@@ -179,6 +224,8 @@ impl Engine {
             self.state.cpu_load = Some(load);
         }
         let _ = self.refresh_tempo();
+        self.state.scene_names = self.scene_names_now();
+        self.drop_stale_modifier();
         let still_there = |id: &u16| blocks::is_fixed(*id) || self.state.preset.grid.blocks().contains(id);
         if self.state.selected_block.filter(still_there).is_none() {
             self.state.selected_block = None;
@@ -193,6 +240,8 @@ impl Engine {
     fn forget_device(&mut self) {
         self.history.clear();
         self.forget_lists();
+        self.modifier = None;
+        self.modifier_seen.clear();
     }
 
     /// Switches to a scene and reads the bypass and X/Y states it carries.
@@ -372,8 +421,11 @@ impl Engine {
         let model = find(0)
             .filter(|_| effect.and_then(|t| params::name(t, 0)).is_some_and(|name| name.ends_with("_TYPE")))
             .map(|v| self.control_json("Type", Kind::Choice, v));
+        // What the looper and the tone match show besides their controls.
+        let looper = blocks::by_id(block).is_some_and(|b| b.effect_type == LOOPER).then(|| self.looper_json());
         json!({ "block": block, "name": blocks::label(block), "fixed": blocks::is_fixed(block),
-                "variant": variant.map(|v| v.name.as_str()), "model": model, "pages": pages })
+                "variant": variant.map(|v| v.name.as_str()), "model": model, "pages": pages,
+                "looper": looper, "tone_match": self.tone_match_json() })
     }
 
     /// A JSON snapshot of the whole editor state.
@@ -412,6 +464,9 @@ impl Engine {
             "lists": { "known": self.lists_known(), "missing_for_selected_block": self.lists_missing() },
             "history": self.history_summary(),
             "preset": { "number": view.number, "name": view.name, "scene": view.scene + 1 },
+            "scenes": self.scenes_json(),
+            "clipboard": { "block": self.block_clip_json(), "scene": self.scene_clip.is_some() },
+            "modifier": self.modifier_json(),
             "library": {
                 "preset_slots": s.model.map(axegrid_model::library::preset_count),
                 "preset_names_known": s.preset_names.len(),

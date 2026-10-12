@@ -8,6 +8,7 @@ pub mod transfer;
 
 pub use frame::{checksum, split_messages, Frame, FrameError};
 pub use message::{
-    function, BlockState, GridCell, Model, ParamAddress, ParamInfo, ParamValue, Reply, ReplyError, Request, XyState,
+    function, BlockState, GridCell, LooperState, Model, ModifierValue, ParamAddress, ParamInfo, ParamValue, Reply,
+    ReplyError, Request, XyState, MODIFIER_FIELDS,
 };
 pub use transfer::{Dump, DumpError, DumpKind};

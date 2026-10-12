@@ -25,6 +25,14 @@ const LOOPER_BUTTONS: &[(&str, u8, u8, bool)] = &[
     ("half", 120, 5, false),
     ("undo", 121, 6, true),
 ];
+/// Status bits of a loop that is being recorded or played.
+const LOOP_RUNNING: u8 = 0b11;
+/// Effect type of the tone match block, and its parameters that start a
+/// capture of the reference and of the local signal, and that match them.
+const TONE_MATCH: u8 = 39;
+const CAPTURE_REFERENCE: &str = "EQMATCH_CAPTUREREF";
+const CAPTURE_LOCAL: &str = "EQMATCH_CAPTUREUSER";
+const MATCH: &str = "EQMATCH_MATCH";
 /// Slowest and fastest tempo the device accepts, in beats per minute.
 pub const TEMPO_RANGE: (u64, u64) = (30, 250);
 /// Two taps further apart than this start a new measurement.
@@ -69,7 +77,7 @@ impl Engine {
     /// Whether the looper button on `controller` is lit, when that is known.
     pub(crate) fn looper_lit(&self, controller: u8) -> Option<bool> {
         let bit = LOOPER_BUTTONS.iter().find(|button| button.1 == controller)?.2;
-        self.state.looper.map(|bits| bits & (1 << bit) != 0)
+        self.state.looper.map(|looper| looper.buttons & (1 << bit) != 0)
     }
 
     /// Name `looper.press` knows the button on `controller` by.
@@ -81,13 +89,16 @@ impl Engine {
         let lit = |bits: u8| -> Vec<&str> {
             LOOPER_BUTTONS.iter().filter(|button| bits & (1 << button.2) != 0).map(|button| button.0).collect()
         };
-        json!({ "watched": self.state.looper.is_some(), "active": self.state.looper.map(lit) })
+        // The position only means something while the loop is running.
+        let running = self.state.looper.filter(|looper| looper.buttons & LOOP_RUNNING != 0);
+        json!({ "watched": self.state.looper.is_some(), "active": self.state.looper.map(|looper| lit(looper.buttons)),
+                "position": running.map(|looper| looper.position.min(99)) })
     }
 
     /// Asks the device to start or stop reporting what the looper does.
     pub(crate) fn watch_looper(&mut self, on: bool) -> Result<(), CommandError> {
         self.session()?.request(&axegrid_sysex::Request::LooperStatus(on))?;
-        self.state.looper = on.then_some(self.state.looper.unwrap_or(0));
+        self.state.looper = on.then_some(self.state.looper.unwrap_or_default());
         Ok(())
     }
 
@@ -104,7 +115,7 @@ impl Engine {
                     self.state.tuner = Some(TunerReading { note, string, cents });
                 }
                 Reply::TempoBeat => self.state.beats += 1,
-                Reply::LooperStatus(bits) => self.state.looper = Some(bits),
+                Reply::LooperStatus(looper) => self.state.looper = Some(looper),
                 Reply::FrontPanelChange => preset_changed = true,
                 Reply::PresetNumber(number) if number != self.state.preset.number => preset_changed = true,
                 _ => {}
@@ -112,6 +123,99 @@ impl Engine {
         }
         Ok(preset_changed)
     }
+}
+
+fn tone_param(name: &str) -> Result<u16, CommandError> {
+    params::id(TONE_MATCH, name).ok_or_else(|| CommandError::NotFound(format!("{name} is not in the parameter tables")))
+}
+
+impl Engine {
+    /// The tone match block of the current preset, if it has one.
+    fn tone_match_block(&self) -> Option<u16> {
+        let placed = self.state.preset.grid.blocks();
+        placed.into_iter().find(|id| blocks::by_id(*id).is_some_and(|b| b.effect_type == TONE_MATCH))
+    }
+
+    fn tone_match_or_error(&self) -> Result<u16, CommandError> {
+        self.tone_match_block()
+            .ok_or_else(|| CommandError::NotFound("the current preset has no Tone Match block".into()))
+    }
+
+    /// Sets one of the tone match's switches. A capture is something
+    /// happening, not a setting, so it is not an edit to undo.
+    fn set_tone_switch(&mut self, block: u16, name: &str, on: bool) -> Result<(), CommandError> {
+        let address = ParamAddress { block, param: tone_param(name)? };
+        let value = self.session()?.set_param(address, u16::from(on))?;
+        self.remember(&value);
+        Ok(())
+    }
+
+    /// Where the tone match workflow stands, as the device reports it.
+    fn tone_match_status(&mut self) -> Result<Value, CommandError> {
+        let block = self.tone_match_or_error()?;
+        let mut read = |name: &str| -> Result<bool, CommandError> {
+            let value = self.session()?.get_param(ParamAddress { block, param: tone_param(name)? })?;
+            self.remember(&value);
+            Ok(value.value != 0)
+        };
+        let (reference, local) = (read(CAPTURE_REFERENCE)?, read(CAPTURE_LOCAL)?);
+        Ok(json!({ "block": block, "capturing_reference": reference, "capturing_local": local }))
+    }
+
+    /// The tone match workflow as the editor shows it, from the values
+    /// last read; `null` unless the tone match block is the one selected.
+    pub(crate) fn tone_match_json(&self) -> Value {
+        let tone = |id: &u16| blocks::by_id(*id).is_some_and(|b| b.effect_type == TONE_MATCH);
+        let Some(block) = self.state.selected_block.filter(tone) else { return Value::Null };
+        let on = |name: &str| {
+            let param = params::id(TONE_MATCH, name)?;
+            self.state.params.iter().find(|p| p.address.param == param).map(|p| p.value != 0)
+        };
+        json!({ "block": block, "capturing_reference": on(CAPTURE_REFERENCE), "capturing_local": on(CAPTURE_LOCAL) })
+    }
+}
+
+fn has_tone_match(engine: &Engine) -> Result<(), &'static str> {
+    connected(engine)?;
+    engine.tone_match_block().map(|_| ()).ok_or("the current preset has no Tone Match block")
+}
+
+fn tone_capture(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
+    let which: &[&str] = match args.str("signal")? {
+        "reference" => &[CAPTURE_REFERENCE],
+        "local" => &[CAPTURE_LOCAL],
+        "both" => &[CAPTURE_REFERENCE, CAPTURE_LOCAL],
+        other => {
+            return Err(CommandError::BadParam {
+                name: "signal",
+                problem: format!("{other:?} is not one of reference, local, both"),
+            })
+        }
+    };
+    let on = args.opt_bool("on")?.unwrap_or(true);
+    let block = engine.tone_match_or_error()?;
+    for name in which {
+        engine.set_tone_switch(block, name, on)?;
+    }
+    engine.tone_match_status()
+}
+
+fn tone_match(engine: &mut Engine, _: &Args<'_>) -> Result<Value, CommandError> {
+    let block = engine.tone_match_or_error()?;
+    // A match is made from two finished captures.
+    engine.set_tone_switch(block, CAPTURE_REFERENCE, false)?;
+    engine.set_tone_switch(block, CAPTURE_LOCAL, false)?;
+    engine.set_tone_switch(block, MATCH, true)?;
+    if engine.state.selected_block == Some(block) {
+        engine.refresh_params()?;
+    }
+    let mut status = engine.tone_match_status()?;
+    status["matched"] = json!(true);
+    Ok(status)
+}
+
+fn tone_status(engine: &mut Engine, _: &Args<'_>) -> Result<Value, CommandError> {
+    engine.tone_match_status()
 }
 
 fn poll(engine: &mut Engine, _: &Args<'_>) -> Result<Value, CommandError> {
@@ -239,8 +343,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Watch Looper",
         menu: "",
         shortcut: "",
-        doc: "Ask the device to report what the looper is doing, so its buttons can show their state. \
-              Selecting the Looper block does this by itself.",
+        doc: "Ask the device to report what the looper is doing, so its buttons can show their state and \
+              the editor how far the loop has played. Selecting the Looper block does this by itself. The \
+              position is read as public documentation describes it and has not yet been seen on a unit.",
         params: &[opt("on", "boolean", "false stops the reports; default true")],
         enabled: connected,
         run: looper_watch,
@@ -259,6 +364,42 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         enabled: connected,
         run: looper_press,
+    },
+    CommandSpec {
+        id: "tonematch.capture",
+        label: "Tone Match Capture",
+        menu: "",
+        shortcut: "",
+        doc: "Start or stop the Tone Match block's capture of the reference signal, of the local signal \
+              (the preset's own sound), or of both. While a capture runs the block averages what it hears.",
+        params: &[
+            req("signal", "string", "reference, local or both"),
+            opt("on", "boolean", "false stops the capture; default true"),
+        ],
+        enabled: has_tone_match,
+        run: tone_capture,
+    },
+    CommandSpec {
+        id: "tonematch.match",
+        label: "Tone Match",
+        menu: "",
+        shortcut: "",
+        doc: "Stop both captures and have the Tone Match block work out the correction that makes the \
+              local signal sound like the reference. Changes the edit buffer only. Starting a capture \
+              is confirmed on a unit; stopping one and matching are not yet.",
+        params: &[],
+        enabled: has_tone_match,
+        run: tone_match,
+    },
+    CommandSpec {
+        id: "tonematch.status",
+        label: "Tone Match Status",
+        menu: "",
+        shortcut: "",
+        doc: "Read whether the Tone Match block is capturing the reference or the local signal. Only reads.",
+        params: &[],
+        enabled: has_tone_match,
+        run: tone_status,
     },
     CommandSpec {
         id: "tempo.get",

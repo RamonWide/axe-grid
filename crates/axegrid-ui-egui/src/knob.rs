@@ -128,6 +128,8 @@ pub enum Change {
     Raw(u32),
     /// Typed this value, in the unit the control displays.
     Typed(f64),
+    /// Right-clicked: asked for what else the control offers.
+    More,
 }
 
 /// The number a typed value stands for. A unit after it is ignored, and a
@@ -182,7 +184,8 @@ fn value_field(ui: &mut Ui, rect: Rect, text: &str) -> Option<f64> {
 pub fn knob(ui: &mut Ui, size: Vec2, name: &str, text: &str, raw: u32, max: u32) -> Option<Change> {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
-    let turned = adjusted(ui, &response, raw, max).map(Change::Raw);
+    let more = response.secondary_clicked().then_some(Change::More);
+    let turned = adjusted(ui, &response, raw, max).map(Change::Raw).or(more);
     if !ui.is_rect_visible(rect) {
         return turned;
     }
@@ -240,7 +243,8 @@ pub fn fader(ui: &mut Ui, size: Vec2, name: &str, text: &str, raw: u32, max: u32
     if notches != 0 {
         next = wheeled_value(next, max, notches, fine);
     }
-    let moved = (next != raw).then_some(Change::Raw(next));
+    let more = response.secondary_clicked().then_some(Change::More);
+    let moved = (next != raw).then_some(Change::Raw(next)).or(more);
     if !ui.is_rect_visible(rect) {
         return moved;
     }

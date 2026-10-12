@@ -47,6 +47,9 @@ pub const MODEL_ANY: u8 = 0x7F;
 /// Scene value that asks for the current scene instead of setting one.
 const SCENE_QUERY: u8 = 0x7F;
 pub const PRESET_NAME_LEN: usize = 32;
+/// Fields a modifier has: selectors 0 to 14. A unit stopped answering
+/// altogether when asked for selector 15, so nothing above 14 is ever sent.
+pub const MODIFIER_FIELDS: u16 = 15;
 
 /// The device families the editor supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -131,6 +134,13 @@ pub enum Request {
     SetParamDisplayed(ParamAddress, f32),
     ParamInfo(ParamAddress),
     ParamStrings(ParamAddress),
+    /// Reads (`value` is `None`) or sets one field of the modifier on a
+    /// parameter. A `field` past the last one is sent as the last one.
+    Modifier {
+        address: ParamAddress,
+        field: u16,
+        value: Option<u16>,
+    },
     /// `None` queries the block's X/Y state.
     BlockXy(u16, Option<XyState>),
     ParamDump {
@@ -175,6 +185,7 @@ impl Request {
             Self::SetParamDisplayed(..) => PARAM_WIDE,
             Self::ParamInfo(_) => PARAM_INFO,
             Self::ParamStrings(_) => PARAM_STRINGS,
+            Self::Modifier { .. } => MODIFIER,
             Self::BlockXy(..) => BLOCK_XY,
             Self::ParamDump { .. } => PARAM_DUMP,
             Self::PlaceBlock { .. } => PLACE_BLOCK,
@@ -233,6 +244,12 @@ impl Request {
                 crate::codec::put_f32(&mut payload, *value);
             }
             Self::ParamInfo(a) | Self::ParamStrings(a) => address(&mut payload, a),
+            Self::Modifier { address: a, field, value } => {
+                address(&mut payload, a);
+                put_uint(&mut payload, u32::from((*field).min(MODIFIER_FIELDS - 1)), 2);
+                put_uint(&mut payload, value.unwrap_or(0).into(), 3);
+                payload.push(u8::from(value.is_some()));
+            }
             Self::BlockXy(block, state) => {
                 put_uint(&mut payload, (*block).into(), 2);
                 payload.push(u8::from(*state == Some(XyState::Y)));
@@ -293,6 +310,25 @@ pub struct GridCell {
     pub routing: u16,
 }
 
+/// One field of a modifier as reported by the device.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModifierValue {
+    pub address: ParamAddress,
+    pub field: u16,
+    pub value: u32,
+    /// The value formatted by the device, e.g. `"NONE"` or `"50.0 %"`.
+    pub text: String,
+}
+
+/// What the looper is doing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LooperState {
+    /// One bit per transport button.
+    pub buttons: u8,
+    /// How far playback is through the loop, 0 to 99.
+    pub position: u8,
+}
+
 /// Decoded state word of one block in the current preset (spec 4.3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockState {
@@ -348,6 +384,7 @@ pub enum Reply {
     ParamDumpItem(ParamValue),
     ParamInfo(ParamInfo),
     ParamStrings(Vec<String>),
+    Modifier(ModifierValue),
     BlockXy {
         block: u16,
         xy: XyState,
@@ -359,7 +396,7 @@ pub enum Reply {
     },
     TempoBeat,
     FrontPanelChange,
-    LooperStatus(u8),
+    LooperStatus(LooperState),
     ListStart,
     ListEnd,
     /// Well-formed message this crate does not interpret.
@@ -466,7 +503,14 @@ impl Reply {
             TUNER => Self::Tuner { note: r.u8()?, string: r.u8()?, cents: r.u8()? },
             TEMPO_BEAT => Self::TempoBeat,
             FRONT_PANEL_CHANGE => Self::FrontPanelChange,
-            LOOPER_STATUS => Self::LooperStatus(r.u8()?),
+            // A report without a position still says what the buttons do.
+            LOOPER_STATUS => Self::LooperStatus(LooperState { buttons: r.u8()?, position: r.u8().unwrap_or(0) }),
+            MODIFIER => Self::Modifier(ModifierValue {
+                address: ParamAddress { block: r.u16(2)?, param: r.u16(2)? },
+                field: r.u16(2)?,
+                value: r.uint(3)?,
+                text: r.text(),
+            }),
             LIST_START => Self::ListStart,
             LIST_END => Self::ListEnd,
             _ => Self::Other(frame),
@@ -676,6 +720,50 @@ mod tests {
         payload.push(0);
         let reply = Frame::new(0x06, function::CAB_NAME, payload).to_bytes();
         assert_eq!(Reply::parse(&reply).unwrap().1, Reply::CabName { index: 192, name: "Magic 160".into() });
+    }
+
+    /// Captured from an Axe-Fx II XL: Amp 1 drive, which has no modifier.
+    #[test]
+    fn modifier_messages_from_hardware() {
+        let drive = ParamAddress { block: AMP1, param: 1 };
+        let query = Request::Modifier { address: drive, field: 0, value: None }.to_frame(0x06).to_bytes();
+        let sent = [0xF0, 0x00, 0x01, 0x74, 0x06, 0x07, 0x6A, 0x00, 0x01, 0x00, 0, 0, 0, 0, 0, 0, 0x6F, 0xF7];
+        assert_eq!(query, sent);
+        let source = [
+            0xF0, 0x00, 0x01, 0x74, 0x06, 0x07, 0x6A, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4E, 0x4F, 0x4E,
+            0x45, 0x00, 0x65, 0xF7,
+        ];
+        let Reply::Modifier(field) = Reply::parse(&source).unwrap().1 else { panic!() };
+        assert_eq!((field.address, field.field, field.value, field.text.as_str()), (drive, 0, 0, "NONE"));
+        let mid = [
+            0xF0, 0x00, 0x01, 0x74, 0x06, 0x07, 0x6A, 0x00, 0x01, 0x00, 0x04, 0x00, 0x7F, 0x7F, 0x01, 0x35, 0x30, 0x2E,
+            0x30, 0x20, 0x25, 0x00, 0x74, 0xF7,
+        ];
+        let Reply::Modifier(field) = Reply::parse(&mid).unwrap().1 else { panic!() };
+        assert_eq!((field.field, field.value, field.text.as_str()), (4, 32767, "50.0 %"));
+        // The field that names the block answers without a text.
+        let owner = [
+            0xF0, 0x00, 0x01, 0x74, 0x06, 0x07, 0x6A, 0x00, 0x01, 0x00, 0x08, 0x00, 0x6A, 0x00, 0x00, 0x00, 0x0D, 0xF7,
+        ];
+        let Reply::Modifier(field) = Reply::parse(&owner).unwrap().1 else { panic!() };
+        assert_eq!((field.field, field.value, field.text.as_str()), (8, 106, ""));
+    }
+
+    #[test]
+    fn a_modifier_selector_past_the_table_is_never_sent() {
+        let address = ParamAddress { block: AMP1, param: 1 };
+        let frame = Request::Modifier { address, field: 15, value: None }.to_frame(0x06);
+        assert_eq!(frame.payload[4..6], [14, 0]);
+        let set = Request::Modifier { address, field: 0, value: Some(3) }.to_frame(0x06);
+        assert_eq!(set.payload, [0x6A, 0, 1, 0, 0, 0, 3, 0, 0, 1]);
+    }
+
+    #[test]
+    fn looper_status_carries_the_position() {
+        let bytes = Frame::new(0x06, function::LOOPER_STATUS, [0x02, 57]).to_bytes();
+        assert_eq!(Reply::parse(&bytes).unwrap().1, Reply::LooperStatus(LooperState { buttons: 2, position: 57 }));
+        let short = Frame::new(0x06, function::LOOPER_STATUS, [0x01]).to_bytes();
+        assert_eq!(Reply::parse(&short).unwrap().1, Reply::LooperStatus(LooperState { buttons: 1, position: 0 }));
     }
 
     #[test]

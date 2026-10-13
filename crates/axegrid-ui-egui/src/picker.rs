@@ -27,11 +27,22 @@ const COLUMN_WIDTH: f32 = 190.0;
 const MAX_COLUMN_WIDTH: f32 = 320.0;
 /// Room kept for the scroll bar under the columns when they do not all fit.
 const SCROLL_BAR: f32 = 14.0;
-/// Width of the number in front of a numbered entry.
+/// Width of the number in front of an entry.
 const NUMBER_WIDTH: f32 = 38.0;
-/// The window's share of the app window when it first opens, and its smallest size.
+/// The window's share of the app window when it first opens.
 const DEFAULT_SHARE: f32 = 0.7;
-const MIN_SIZE: egui::Vec2 = vec2(380.0, 220.0);
+/// The smallest the window is made. The width holds the search box beside
+/// the widest tabs ("Factory (189)", "User (1024)", "Other (4)") with a
+/// little of the key hints after them; the height holds the two lines above
+/// the list and some eight entries of it.
+const MIN_SIZE: egui::Vec2 = vec2(560.0, 280.0);
+/// What the app window keeps around the browser when it is itself that small.
+const SCREEN_MARGIN: egui::Vec2 = vec2(32.0, 72.0);
+/// The widest and the narrowest the search box is drawn.
+const SEARCH_WIDTH: f32 = 200.0;
+const MIN_SEARCH_WIDTH: f32 = 110.0;
+/// The key hints are left out when less room than this is left for them.
+const MIN_HINT_WIDTH: f32 = 70.0;
 /// What the unit calls a user-cab slot that holds nothing.
 const EMPTY_CAB: &str = "EMPTY";
 /// Frames after opening during which the current choice is scrolled to;
@@ -50,6 +61,23 @@ pub(crate) fn matches(filter: &str, number: Option<u32>, name: &str) -> bool {
     let name = name.to_lowercase();
     let number = number.map(|number| number.to_string()).unwrap_or_default();
     filter.split_whitespace().all(|word| name.contains(&word.to_lowercase()) || number.contains(word))
+}
+
+/// The smallest size of the window in an app window of size `screen`:
+/// [`MIN_SIZE`], or what the app window has room for when that is less.
+pub(crate) fn min_size(screen: egui::Vec2) -> egui::Vec2 {
+    // `max` and `min` take the other value for a NaN, so nonsense gives a size too.
+    let room = (screen - SCREEN_MARGIN).max(vec2(COLUMN_WIDTH, 4.0 * ROW_HEIGHT));
+    MIN_SIZE.min(room)
+}
+
+/// The width of the search box when `available` is left in its row.
+pub(crate) fn search_width(available: f32) -> f32 {
+    // A clamped NaN stays one.
+    if available.is_nan() {
+        return MIN_SEARCH_WIDTH;
+    }
+    (available * 0.36).clamp(MIN_SEARCH_WIDTH, SEARCH_WIDTH)
 }
 
 /// How a number of entries is laid out in a space.
@@ -114,6 +142,102 @@ pub(crate) fn step(at: Option<usize>, count: usize, rows: usize, step: Step) -> 
     })
 }
 
+// What follows, up to the cab list, is what any window that lists entries in
+// columns is built from; the preset and user-cab managers use it too.
+
+impl Columns {
+    /// The room all the columns take together.
+    pub(crate) fn extent(&self) -> egui::Vec2 {
+        vec2(self.columns as f32 * self.column_width, self.rows as f32 * ROW_HEIGHT)
+    }
+
+    /// Where the entry at a position is drawn, from the top left of the first.
+    pub(crate) fn place(&self, position: usize) -> Rect {
+        self.cell(position)
+    }
+
+    /// The positions, among `count` entries, of those in the columns that
+    /// show between `left` and `right` of the list: the only ones worth drawing.
+    pub(crate) fn visible(&self, left: f32, right: f32, count: usize) -> Range<usize> {
+        // A cast from a float saturates, and a comparison with NaN gives zero.
+        let first = (left / self.column_width).max(0.0) as usize;
+        let last = ((right / self.column_width).ceil().max(0.0) as usize).min(self.columns);
+        let start = first.saturating_mul(self.rows).min(count);
+        start..last.saturating_mul(self.rows).min(count).max(start)
+    }
+}
+
+/// The arrow keys just pressed, taken out of the input so that nothing else
+/// (a search box, say) acts on them as well.
+pub(crate) fn take_arrows(input: &mut egui::InputState) -> Vec<Step> {
+    let arrows = [
+        (Key::ArrowUp, Step::Up),
+        (Key::ArrowDown, Step::Down),
+        (Key::ArrowLeft, Step::Left),
+        (Key::ArrowRight, Step::Right),
+    ];
+    arrows.into_iter().filter(|(key, _)| input.consume_key(Modifiers::NONE, *key)).map(|(_, step)| step).collect()
+}
+
+/// How one entry of a column list looks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct EntryLook<'a> {
+    /// The number in front of the name, as it is written.
+    pub number: Option<&'a str>,
+    pub name: &'a str,
+    /// Filled with the accent: the choice in force, or the row that is picked.
+    pub filled: bool,
+    /// Under the keyboard highlight: raised and outlined.
+    pub lit: bool,
+    /// Written and outlined in the accent: what the unit is on, in a list where the fill means "picked".
+    pub marked: bool,
+    /// The name stands for a missing one and is written dimmer.
+    pub faint: bool,
+}
+
+/// The fill of an entry and the colours of its number and of its name.
+/// Text on the accent fill takes the colour that reads on it.
+pub(crate) fn entry_colors(look: &EntryLook<'_>, hovered: bool) -> (Color32, Color32, Color32) {
+    let raised = if look.lit || hovered { theme::RAISED_HOT } else { Color32::TRANSPARENT };
+    if look.filled {
+        let ink = theme::text_on(theme::ACCENT);
+        (theme::ACCENT, ink, ink)
+    } else if look.marked {
+        (raised, theme::ACCENT, theme::ACCENT)
+    } else {
+        (raised, theme::TEXT_DIM, if look.faint { theme::TEXT_DIM } else { theme::TEXT })
+    }
+}
+
+/// Draws one entry in its cell of a column list and says what the pointer did to it.
+pub(crate) fn entry(ui: &mut egui::Ui, cell: Rect, id: Id, look: &EntryLook<'_>) -> egui::Response {
+    let cell = cell.shrink2(vec2(2.0, 1.0));
+    let response = ui.interact(cell, id, Sense::click());
+    let (fill, number_ink, name_ink) = entry_colors(look, response.hovered());
+    let painter = ui.painter().with_clip_rect(cell.intersect(ui.clip_rect()));
+    painter.rect_filled(cell, 4.0_f32, fill);
+    if look.lit || look.marked {
+        // On the accent fill an accent outline would not show.
+        let (width, ink) =
+            (if look.lit { 1.5_f32 } else { 1.0_f32 }, if look.filled { name_ink } else { theme::ACCENT });
+        painter.rect_stroke(cell, 4.0_f32, Stroke::new(width, ink), StrokeKind::Inside);
+    }
+    let mut left = cell.left() + 6.0;
+    if let Some(number) = look.number {
+        let at = egui::pos2(left + NUMBER_WIDTH - 8.0, cell.center().y);
+        painter.text(at, Align2::RIGHT_CENTER, number, FontId::monospace(12.0), number_ink);
+        left += NUMBER_WIDTH;
+    }
+    painter.text(
+        egui::pos2(left, cell.center().y),
+        Align2::LEFT_CENTER,
+        look.name,
+        FontId::proportional(13.0),
+        name_ink,
+    );
+    response.on_hover_text(look.name)
+}
+
 /// What the engine says of the cab list behind a cab control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CabList {
@@ -153,7 +277,7 @@ pub(crate) fn cab_ranges(total: u32, factory: u32, user: u32) -> CabRanges {
 }
 
 /// One choice: the raw value that selects it, the number shown in front of
-/// it if it has one, and its name if that has been read.
+/// it (its place in its list, from 1), and its name if that has been read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Entry<'a> {
     pub value: u32,
@@ -192,21 +316,24 @@ impl Section<'_> {
 
 /// Groups the choices of a control. An ordinary list is one group. A cab
 /// list on a model whose cabinet memory is known is split into the factory
-/// cabs and the numbered user slots; the user slots are offered as soon as
-/// the cab list's length is known, with the names read so far (`user_names`,
-/// by slot number from 1), while the factory cabs wait for their names.
+/// cabs and the user slots; the user slots are offered as soon as the cab
+/// list's length is known, with the names read so far (`user_names`, by
+/// slot number from 1), while the factory cabs wait for their names.
+///
+/// Every entry is numbered from 1: a user cab by its slot, anything else
+/// by its place in the whole list, which for a factory cab is its place
+/// among the factory cabs.
 pub(crate) fn sections<'a>(
     choices: Option<&'a [Value]>,
     cab: Option<CabList>,
     user_names: &'a BTreeMap<u16, String>,
 ) -> Vec<Section<'a>> {
     let named = |value: u32| choices.and_then(|list| list.get(value as usize)).and_then(Value::as_str);
-    let listed = |range: Range<u32>, numbered: bool| -> Vec<Entry<'a>> {
+    let listed = |range: Range<u32>| -> Vec<Entry<'a>> {
         let known = range.filter(|_| choices.is_some());
-        known.map(|value| Entry { value, number: numbered.then_some(value + 1), name: named(value) }).collect()
+        known.map(|value| Entry { value, number: Some(value.saturating_add(1)), name: named(value) }).collect()
     };
-    let whole =
-        |range: Range<u32>| vec![Section { title: "", entries: listed(range.clone(), false), range, user: false }];
+    let whole = |range: Range<u32>| vec![Section { title: "", entries: listed(range.clone()), range, user: false }];
     let Some(cab) = cab else {
         return whole(0..choices.map_or(0, |list| u32::try_from(list.len()).unwrap_or(u32::MAX)));
     };
@@ -222,14 +349,9 @@ pub(crate) fn sections<'a>(
         })
         .collect();
     let mut sections = vec![
-        Section {
-            title: "Factory",
-            entries: listed(ranges.factory.clone(), false),
-            range: ranges.factory,
-            user: false,
-        },
+        Section { title: "Factory", entries: listed(ranges.factory.clone()), range: ranges.factory, user: false },
         Section { title: "User", entries: slots, range: ranges.user, user: true },
-        Section { title: "Other", entries: listed(ranges.other.clone(), true), range: ranges.other, user: false },
+        Section { title: "Other", entries: listed(ranges.other.clone()), range: ranges.other, user: false },
     ];
     sections.retain(|section| !section.range.is_empty());
     sections
@@ -329,22 +451,26 @@ impl Shell {
         let mut open = true;
         let mut close = backdrop.inner || escape;
         let mut chosen = None;
-        let size = (screen.size() * DEFAULT_SHARE).max(MIN_SIZE);
+        // A size kept from before that is smaller is brought up to this by the window itself.
+        let smallest = min_size(screen.size());
+        let size = (screen.size() * DEFAULT_SHARE).max(smallest);
         let window = egui::Window::new(picker.title.clone())
             .id(Id::new("choice-picker"))
             .order(Order::Foreground)
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .min_size(MIN_SIZE)
+            .min_size(smallest)
             .default_size(size)
             .default_pos(screen.center() - size / 2.0);
         window.show(ctx, |ui| {
             let mut shown = Vec::new();
-            ui.horizontal(|ui| {
+            // In a window too narrow for all of it the tabs go on a line of their own.
+            ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new("Find").small().color(theme::TEXT_DIM));
-                let field =
-                    egui::TextEdit::singleline(&mut picker.filter).desired_width(200.0).hint_text("name or number");
+                let field = egui::TextEdit::singleline(&mut picker.filter)
+                    .desired_width(search_width(ui.available_width()))
+                    .hint_text("name or number");
                 let edit = ui.add(field);
                 if !edit.has_focus() {
                     edit.request_focus();
@@ -362,23 +488,29 @@ impl Shell {
                         }
                     }
                 }
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    let keys = "Click to hear · double-click or Enter to choose · Esc to close";
-                    ui.label(RichText::new(keys).small().color(theme::TEXT_DIM));
-                });
+                // The hints get what room is left, cut short rather than drawn over the tabs.
+                if ui.available_width() >= MIN_HINT_WIDTH {
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        let keys = "Click to hear · double-click or Enter to choose · Esc to close";
+                        let hints = egui::Label::new(RichText::new(keys).small().color(theme::TEXT_DIM)).truncate();
+                        ui.add(hints).on_hover_text(keys);
+                    });
+                }
             });
             // The cab list is read a few names at a time while the cab block is open.
             if let Some(cab) = cab.filter(|cab| cab.known < cab.total) {
                 ui.horizontal(|ui| {
+                    // The button and the spinner come first: the text takes what is left.
                     if self.lists_failed == Some(picker.block) {
-                        ui.label(RichText::new("The cab names could not be read from the unit.").color(theme::DANGER));
                         if ui.small_button("Try again").clicked() {
                             self.lists_failed = None;
                         }
+                        let failed = RichText::new("The cab names could not be read from the unit.");
+                        ui.add(egui::Label::new(failed.color(theme::DANGER)).truncate());
                     } else {
                         ui.spinner();
                         let progress = format!("Reading cab names from the unit: {} of {}", cab.known, cab.total);
-                        ui.label(RichText::new(progress).small().color(theme::TEXT_DIM));
+                        ui.add(egui::Label::new(RichText::new(progress).small().color(theme::TEXT_DIM)).truncate());
                     }
                 });
             }
@@ -523,6 +655,47 @@ mod tests {
     }
 
     #[test]
+    fn a_long_list_is_numbered_by_position() {
+        let choices: Vec<Value> = (0..280).map(|_| json!("Amp")).collect();
+        let names = BTreeMap::new();
+        let groups = sections(Some(&choices), None, &names);
+        let numbers: Vec<Option<u32>> = groups[0].entries.iter().map(|entry| entry.number).collect();
+        assert_eq!(numbers, (1..=280).map(Some).collect::<Vec<_>>());
+        // No name has a figure in it: only the numbers can match one.
+        assert_eq!(groups[0].matching("280"), vec![279]);
+        assert_eq!(groups[0].matching("28"), vec![27, 127, 227, 279]);
+        assert_eq!(groups[0].matching("amp 7").len(), 55);
+        assert!(groups[0].matching("281").is_empty());
+        // The factory cabs of a split list are numbered the same way.
+        let cab = CabList { total: 280, known: 280, slots: Some((189, 64)) };
+        let split = sections(Some(&choices), Some(cab), &names);
+        assert_eq!(split[0].entries.first().map(|entry| entry.number), Some(Some(1)));
+        assert_eq!(split[0].entries.last().map(|entry| entry.number), Some(Some(189)));
+        assert_eq!(split[0].matching("189"), vec![188]);
+        assert_eq!(split[1].entries.first().map(|entry| (entry.value, entry.number)), Some((189, Some(1))));
+        // What follows the user cabs keeps its place in the whole list.
+        assert_eq!(split[2].entries.first().map(|entry| (entry.value, entry.number)), Some((253, Some(254))));
+    }
+
+    #[test]
+    fn the_window_has_a_smallest_size() {
+        // On an ordinary app window: wide enough for the search box and the tabs.
+        assert_eq!(min_size(vec2(1600.0, 900.0)), MIN_SIZE);
+        const { assert!(MIN_SIZE.x >= 2.0 * COLUMN_WIDTH && MIN_SIZE.y >= 8.0 * ROW_HEIGHT) };
+        // Never more than a small app window has room for, and never nothing.
+        let cramped = min_size(vec2(400.0, 300.0));
+        assert!(cramped.x < 400.0 && cramped.y < 300.0 && cramped.x >= COLUMN_WIDTH && cramped.y > ROW_HEIGHT);
+        for screen in [vec2(0.0, 0.0), vec2(-10.0, -10.0), vec2(f32::NAN, f32::NAN)] {
+            let size = min_size(screen);
+            assert!(size.x > 0.0 && size.y > 0.0 && size.x <= MIN_SIZE.x && size.y <= MIN_SIZE.y, "{screen:?}");
+        }
+        // The search box gives way before the tabs do.
+        assert_eq!(search_width(MIN_SIZE.x), SEARCH_WIDTH);
+        assert_eq!(search_width(100.0), MIN_SEARCH_WIDTH);
+        assert_eq!(search_width(f32::NAN), MIN_SEARCH_WIDTH);
+    }
+
+    #[test]
     fn a_layout_survives_nonsense_sizes() {
         for (width, height) in [(0.0, 0.0), (-50.0, -50.0), (f32::NAN, f32::NAN), (1.0, 1.0e9)] {
             let grid = columns(40, width, height);
@@ -605,8 +778,14 @@ mod tests {
         let groups = sections(Some(&choices), None, &names);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].range, 0..3);
-        assert_eq!(groups[0].entries[2], Entry { value: 2, number: None, name: Some("Three") });
+        // Every entry carries its place in the list, from 1.
+        assert_eq!(groups[0].entries[0], Entry { value: 0, number: Some(1), name: Some("One") });
+        assert_eq!(groups[0].entries[2], Entry { value: 2, number: Some(3), name: Some("Three") });
         assert_eq!(groups[0].matching("t"), vec![1, 2]);
+        // The search finds an entry by that number as well as by its name.
+        assert_eq!(groups[0].matching("3"), vec![2]);
+        assert_eq!(groups[0].matching("2 two"), vec![1]);
+        assert!(groups[0].matching("4").is_empty());
         // A list that is not there yet is an empty group, not a crash.
         assert!(sections(None, None, &names)[0].entries.is_empty());
     }
@@ -622,10 +801,14 @@ mod tests {
         assert_eq!(
             groups[0].entries,
             [
-                Entry { value: 0, number: None, name: Some("F one") },
-                Entry { value: 1, number: None, name: Some("F two") }
+                Entry { value: 0, number: Some(1), name: Some("F one") },
+                Entry { value: 1, number: Some(2), name: Some("F two") }
             ]
         );
+        // A factory cab is found by its number, like a user slot.
+        assert_eq!(groups[0].matching("2"), vec![1]);
+        assert_eq!(groups[0].matching("1 one"), vec![0]);
+        assert!(groups[0].matching("3").is_empty());
         // A user slot is numbered from 1 and selects the position after the factory cabs.
         assert_eq!(groups[1].entries[0], Entry { value: 2, number: Some(1), name: Some("Mine") });
         assert_eq!(groups[1].entries[2], Entry { value: 4, number: Some(3), name: Some("EMPTY") });

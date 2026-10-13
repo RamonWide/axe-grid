@@ -28,7 +28,7 @@ use axegrid_engine::{registry, CommandError, Engine, View, Worker, XyState};
 use axegrid_model::{blocks, grid};
 use egui::epaint::CubicBezierShape;
 use egui::{
-    pos2, vec2, Align, Align2, Color32, FontId, Key, KeyboardShortcut, Layout, Modifiers, Pos2, Rect, RichText,
+    pos2, vec2, Align, Align2, Color32, FontId, Key, KeyboardShortcut, Layout, Modifiers, Pos2, Rangef, Rect, RichText,
 };
 use egui::{Sense, Stroke, StrokeKind, Vec2};
 use selection::Selection;
@@ -66,6 +66,13 @@ const PRESET_FONT: f32 = 20.0;
 const PRESET_HEIGHT: f32 = 34.0;
 const PRESET_ARROW: f32 = 38.0;
 const PRESET_NAME_MIN: f32 = 120.0;
+/// Width of the name's box when the window has the room: that of the
+/// longest name the unit takes, `PRESET_NAME_CHARS` letters of ordinary
+/// text at `PRESET_FONT`, with the box's padding.
+const PRESET_NAME: f32 = 400.0;
+const PRESET_NAME_CHARS: usize = 32;
+/// Width of the preset number's box: four digits and room around them.
+const PRESET_NUMBER: f32 = 68.0;
 /// Width of one character of the small text in a control cell, roughly.
 const CHOICE_CHAR_WIDTH: f32 = 7.4;
 /// A fader's share of a cell's width.
@@ -154,6 +161,26 @@ enum Rail {
     Output,
 }
 
+/// How many cells wide the button that shows a cab's name is: a cab name is
+/// far longer than a cell is wide, and the whole of it should be read.
+const CAB_UNITS: f32 = 3.0;
+/// The size of the small text in a control cell.
+const CHOICE_FONT: f32 = 11.0;
+/// The share of a button's room its name is fitted to, cut by the average letter.
+const NAME_FIT: f32 = 0.95;
+/// The least and the most the model selector in the editor's title row is wide.
+const MODEL_WIDTH: (f32, f32) = (240.0, 420.0);
+
+/// How many cells wide a control is drawn: a fader is narrower than a cell,
+/// and the button with a cab's name spans several so that the name fits.
+fn control_units(kind: &str, cabs: bool) -> f32 {
+    match kind {
+        "slider" => FADER_WIDTH,
+        "choice" if cabs => CAB_UNITS,
+        _ => 1.0,
+    }
+}
+
 /// How much room a page of the block editor needs.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
 struct PageShape {
@@ -171,7 +198,9 @@ impl PageShape {
         let mut shape = Self { graph: page["graph"].is_object(), ..Self::default() };
         for row in page["rows"].as_array().into_iter().flatten() {
             let controls = || row["controls"].as_array().into_iter().flatten();
-            let units: f32 = controls().map(|c| if c["kind"] == "slider" { FADER_WIDTH } else { 1.0 }).sum();
+            let units: f32 = controls()
+                .map(|c| control_units(c["kind"].as_str().unwrap_or_default(), c["cab_list"].is_object()))
+                .sum();
             let height = if controls().any(|c| c["kind"] == "slider") { FADER_ROWS } else { 1.0 };
             if row["mixer"] == true {
                 shape.mixer_rows += height;
@@ -351,6 +380,20 @@ fn fitted(text: &str, drawn: f32, room: f32) -> String {
     }
     // `shorten` counts in letters of its own width, so hand it this text's.
     shorten(text, room / (drawn / letters as f32) * CHOICE_CHAR_WIDTH)
+}
+
+/// Where the preset group (arrows, number, name) goes in the header, as the
+/// span from its left edge to its right. `bar` is the whole header and
+/// `free` the part of it the group's neighbours leave. The group is `wanted`
+/// wide and centred on the bar when that fits in `free`; otherwise it moves
+/// off centre to stay inside `free`, then narrows to fill it. It is never
+/// narrower than `least`: only a `free` narrower than that makes it run
+/// over, and then past its right neighbour, never its left.
+fn preset_span(bar: Rangef, free: Rangef, wanted: f32, least: f32) -> Rangef {
+    let least = least.min(wanted);
+    let width = wanted.min(free.span()).max(least);
+    let left = (bar.center() - width / 2.0).min(free.max - width).max(free.min);
+    Rangef::new(left, left + width)
 }
 
 impl Shell {
@@ -649,7 +692,8 @@ impl Shell {
     }
 
     /// The preset's number and name between the previous and next arrows.
-    /// It fills the width it is given: the name gets what the rest leaves.
+    /// It fills the width it is given, which `preset_span` decides: the name
+    /// gets what the rest leaves.
     fn preset_name(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let view = self.view.clone();
         let state = &view.state;
@@ -660,11 +704,23 @@ impl Shell {
         if arrow(ui, "◀").on_hover_text("Previous preset").clicked() {
             actions.push(("preset.previous", Value::Null));
         }
+        // The box is as tall as the row, and what is typed sits in its middle.
+        let digits = FontId::monospace(PRESET_FONT);
         let number = egui::TextEdit::singleline(&mut self.goto)
-            .hint_text(format!("{:03}", state.preset.number))
-            .desired_width(42.0)
-            .font(FontId::monospace(17.0));
+            .desired_width(PRESET_NUMBER)
+            .min_size(vec2(PRESET_NUMBER, PRESET_HEIGHT))
+            .horizontal_align(Align::Center)
+            .vertical_align(Align::Center)
+            .text_color(theme::TEXT)
+            .char_limit(4)
+            .font(digits.clone());
         let number = ui.add(number).on_hover_text("Type a preset number and press Enter");
+        // The number it is on shows until one is being typed, its ink in the
+        // very middle of the box.
+        if self.goto.is_empty() && !number.has_focus() {
+            let text = format!("{:03}", state.preset.number);
+            centred_text(ui.painter(), number.rect.center(), &text, digits, Color32::WHITE);
+        }
         // Everything left but the next arrow and the gap before it.
         let width = (ui.available_width() - PRESET_ARROW - ui.spacing().item_spacing.x).max(PRESET_NAME_MIN);
         let font = FontId::proportional(PRESET_FONT);
@@ -676,8 +732,13 @@ impl Shell {
         }
         match &mut self.rename {
             Some(name) => {
-                // The box is its text plus a margin of 4 points on each side.
-                let field = egui::TextEdit::singleline(name).desired_width(width - 8.0).font(font).char_limit(32);
+                // The same box as the name it replaces.
+                let field = egui::TextEdit::singleline(name)
+                    .desired_width(width)
+                    .min_size(vec2(width, PRESET_HEIGHT))
+                    .vertical_align(Align::Center)
+                    .font(font)
+                    .char_limit(PRESET_NAME_CHARS);
                 let edit = ui.add(field);
                 if std::mem::take(&mut self.rename_needs_focus) {
                     edit.request_focus();
@@ -710,10 +771,11 @@ impl Shell {
         }
     }
 
-    fn preset_controls(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    /// `bar` is the header's whole width, which the preset's name is centred on.
+    fn preset_controls(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>, bar: Rangef) {
         let view = self.view.clone();
-        // Laid out from the right: the buttons first, so that the preset's
-        // name can take all the room they leave.
+        // Laid out from the right: the buttons first, so that the room they
+        // leave for the preset's name is known.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui.button("Disconnect").clicked() {
                 actions.push(("device.disconnect", Value::Null));
@@ -745,7 +807,14 @@ impl Shell {
                 }
             }
             ui.separator();
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| self.preset_name(ui, actions));
+            let free = ui.available_rect_before_wrap();
+            let gaps = 3.0 * ui.spacing().item_spacing.x;
+            let fixed = 2.0 * PRESET_ARROW + PRESET_NUMBER + gaps;
+            let span = preset_span(bar, free.x_range(), fixed + PRESET_NAME, fixed + PRESET_NAME_MIN);
+            let place = egui::UiBuilder::new()
+                .max_rect(Rect::from_x_y_ranges(span, free.y_range()))
+                .layout(Layout::left_to_right(Align::Center));
+            ui.scope_builder(place, |ui| self.preset_name(ui, actions));
         });
     }
 
@@ -826,6 +895,8 @@ impl Shell {
             |ui: &egui::Ui, height: f32| (vec2(ui.available_width(), height), Layout::left_to_right(Align::Center));
         let (size, layout) = row(ui, if self.view.connected { PRESET_HEIGHT } else { HEADER_ROW });
         ui.allocate_ui_with_layout(size, layout, |ui| {
+            // The whole bar, before anything has taken its share of it.
+            let bar = ui.max_rect().x_range();
             ui.label(RichText::new("AXE·GRID").size(18.0).strong().color(theme::ACCENT));
             let view = self.view.clone();
             let state = &view.state;
@@ -838,7 +909,7 @@ impl Shell {
             ui.label(RichText::new(format!("{model}{firmware}{tag}")).small().color(theme::TEXT_DIM));
             ui.separator();
             if view.connected {
-                self.preset_controls(ui, actions);
+                self.preset_controls(ui, actions, bar);
             } else {
                 if self.searching {
                     ui.spinner();
@@ -1322,6 +1393,9 @@ impl Shell {
         };
         // A switch or a list that takes a modifier opens it the same way,
         // without the right click being taken from the control itself.
+        // The button with a cab's name is several cells wide, as `PageShape` counts it.
+        let wide = control.kind == "choice" && control.cabs;
+        let cell = if wide { vec2(cell.x * control_units(&control.kind, control.cabs), cell.y) } else { cell };
         let over = ui.rect_contains_pointer(Rect::from_min_size(ui.cursor().min, cell));
         let stepped = matches!(control.kind.as_str(), "toggle" | "choice");
         if control.modifier && stepped && over && ui.input(|input| input.pointer.secondary_clicked()) {
@@ -1381,7 +1455,12 @@ impl Shell {
                     (_, choices) if picker::wanted(choices.as_ref().map(Vec::len), control.cabs) => {
                         let listed = choices.as_ref().and_then(|choices| choices.get(control.raw as usize));
                         let current = listed.map_or(control.text.as_str(), String::as_str);
-                        let name = RichText::new(shorten(current, body.width() - 10.0)).size(11.0);
+                        // The whole name where it fits; cut short only where it cannot,
+                        // and then the whole of it is in the hover text.
+                        let font = FontId::proportional(CHOICE_FONT);
+                        let drawn = ui.painter().layout_no_wrap(current.to_owned(), font, theme::TEXT).size().x;
+                        let room = (body.width() - 2.0 * ui.spacing().button_padding.x) * NAME_FIT;
+                        let name = RichText::new(fitted(current, drawn, room)).size(CHOICE_FONT);
                         let hint = format!("{current}\nClick to browse the list");
                         if picker::button(ui, name, body.width()).on_hover_text(hint).clicked() {
                             *picker = Some(picker::Picker::new(block, control.id, &control.label));
@@ -1761,8 +1840,19 @@ impl Shell {
                 let current = choices.get(param.raw as usize).map_or(param.text.as_str(), String::as_str);
                 if picker::wanted(Some(choices.len()), param.cabs) {
                     // Too many models for a drop-down: they are browsed in a window.
-                    let hint = "Click to browse the models";
-                    if picker::button(ui, RichText::new(current), 240.0).on_hover_text(hint).clicked() {
+                    // As wide as the longest model's name needs, so that it does not
+                    // change with the model; a name is cut short only past the most.
+                    let font = egui::TextStyle::Button.resolve(ui.style());
+                    let measure =
+                        |text: &str| ui.painter().layout_no_wrap(text.to_owned(), font.clone(), theme::TEXT).size().x;
+                    let longest = choices.iter().max_by_key(|choice| choice.chars().count());
+                    let drawn = measure(current);
+                    let padding = 2.0 * ui.spacing().button_padding.x;
+                    let needed = longest.map_or(0.0, |choice| measure(choice)).max(drawn) / NAME_FIT + padding;
+                    let width = needed.max(MODEL_WIDTH.0).min(MODEL_WIDTH.1);
+                    let name = fitted(current, drawn, (width - padding) * NAME_FIT);
+                    let hint = format!("{current}\nClick to browse the models");
+                    if picker::button(ui, RichText::new(name), width).on_hover_text(hint).clicked() {
                         self.picker = Some(picker::Picker::new(block, param.id, &param.label));
                     }
                 } else {
@@ -2038,6 +2128,70 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_preset_group_is_centred_on_the_bar_when_there_is_room() {
+        // Neighbours of unequal width: the middle of the room they leave is
+        // not the middle of the bar.
+        let bar = Rangef::new(8.0, 1912.0);
+        let span = preset_span(bar, Rangef::new(260.0, 1500.0), 560.0, 280.0);
+        assert_eq!(span.span(), 560.0);
+        assert_eq!(span.center(), bar.center());
+    }
+
+    #[test]
+    fn the_preset_group_stays_between_its_neighbours() {
+        let bar = Rangef::new(0.0, 1120.0);
+        // The right neighbour reaches past where a centred group would end.
+        let free = Rangef::new(260.0, 760.0);
+        let span = preset_span(bar, free, 400.0, 280.0);
+        assert_eq!((span.min, span.max), (360.0, 760.0));
+        // The same on the left.
+        let span = preset_span(bar, Rangef::new(420.0, 1100.0), 400.0, 280.0);
+        assert_eq!((span.min, span.max), (420.0, 820.0));
+        // Too little room for all of it: it narrows to what there is.
+        let span = preset_span(bar, free, 560.0, 280.0);
+        assert_eq!((span.min, span.max), (free.min, free.max));
+        // At every width in between it is inside the room and no narrower than its least.
+        for right in 540..1120 {
+            let free = Rangef::new(260.0, right as f32);
+            let span = preset_span(bar, free, 560.0, 280.0);
+            assert!(span.min >= free.min && span.max <= free.max, "{span:?} outside {free:?}");
+            assert!((280.0..=560.0).contains(&span.span()), "{span:?}");
+        }
+    }
+
+    #[test]
+    fn the_preset_group_keeps_its_least_width() {
+        let bar = Rangef::new(0.0, 600.0);
+        let free = Rangef::new(260.0, 400.0);
+        let span = preset_span(bar, free, 560.0, 280.0);
+        // It starts where its left neighbour ends and keeps its least width.
+        assert_eq!((span.min, span.max), (260.0, 540.0));
+        // Room that is no room at all is survived too.
+        let span = preset_span(bar, Rangef::new(500.0, 300.0), 560.0, 280.0);
+        assert_eq!((span.min, span.span()), (500.0, 280.0));
+    }
+
+    #[test]
+    fn the_longest_preset_name_fits_its_box() {
+        let ctx = egui::Context::default();
+        let mut widest = 0.0_f32;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let font = FontId::proportional(PRESET_FONT);
+            for name in ["Brit 800 Crunch + Plate Reverb 2", "FAS Modern Lead w/ Stereo Delay "] {
+                assert_eq!(name.chars().count(), PRESET_NAME_CHARS);
+                let drawn = ui.fonts_mut(|fonts| fonts.layout_no_wrap(name.to_owned(), font.clone(), theme::TEXT));
+                widest = widest.max(drawn.size().x);
+            }
+            // What `preset_name` leaves the text of the name's box.
+            let room = (PRESET_NAME - 2.0 * ui.spacing().button_padding.x) * 0.94;
+            assert!(widest <= room, "{widest} points of name in {room}");
+        });
+        // Nothing is drawn here, so the font atlas has nowhere to go.
+        output.textures_delta.clear();
+        assert!(widest > 0.0, "nothing was measured");
+    }
+
+    #[test]
     fn every_registry_shortcut_parses() {
         for command in registry().iter().filter(|c| !c.shortcut.is_empty()) {
             assert!(parse_shortcut(command.shortcut).is_some(), "{} has an unusable shortcut", command.id);
@@ -2115,6 +2269,31 @@ mod tests {
         // A page of faders alone gets their full height, and no more.
         let faders = json!({ "rows": [{ "mixer": false, "controls": [{ "kind": "slider" }, { "kind": "slider" }] }] });
         assert_eq!(PageShape::of(&faders).rows(), FADER_ROWS);
+        // The button with a cab's name takes several cells; any other list takes one.
+        let cab = json!({ "rows": [{ "controls": [
+            { "kind": "choice", "cab_list": { "total": 1217 } }, { "kind": "choice", "choices": ["A"] }, { "kind": "knob" },
+        ] }] });
+        assert_eq!(PageShape::of(&cab).units(), CAB_UNITS + 2.0);
+        assert_eq!((control_units("knob", true), control_units("slider", false)), (1.0, FADER_WIDTH));
+    }
+
+    #[test]
+    fn a_long_cab_name_fits_its_button() {
+        let ctx = egui::Context::default();
+        let mut widest = 0.0_f32;
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let font = FontId::proportional(CHOICE_FONT);
+            for name in ["4x12 Brit TV Mix (Ultra-Res) 01", "MY 4X12 RECTO V30 SM57+R121 MIX"] {
+                let drawn = ui.painter().layout_no_wrap(name.to_owned(), font.clone(), theme::TEXT);
+                widest = widest.max(drawn.size().x);
+            }
+            // What `control` leaves the text of the button at full size.
+            let room = (knob::CELL.x * CAB_UNITS - 6.0 - 2.0 * ui.spacing().button_padding.x) * NAME_FIT;
+            assert!(widest <= room, "{widest} points of name in {room}");
+        });
+        // Nothing is drawn here, so the font atlas has nowhere to go.
+        output.textures_delta.clear();
+        assert!(widest > 0.0, "nothing was measured");
     }
 
     #[test]

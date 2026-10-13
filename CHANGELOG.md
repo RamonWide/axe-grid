@@ -28,7 +28,10 @@ listed under "Changed".
   Damping, Off Value, Scale and Offset, and see a curve of what the controller will do. Every
   field shows the unit's own text. Commands `modifier.open`, `modifier.close`,
   `modifier.attach`, `modifier.remove`, `modifier.set` and `modifier.sources`. Reading a
-  modifier is confirmed on a unit; changing one is not yet, and the curve is a sketch.
+  modifier, attaching its first source, setting Mid and Auto Engage and removing it are
+  confirmed on a unit; the other sources and fields are not yet, and the curve is a sketch.
+  The unit resets a modifier's other fields when it is removed, so a removal is one step to
+  undo that brings the source and the fields back.
 - **The looper shows how far the loop has played**, as a bar above its controls. Not yet
   confirmed on a unit.
 - **Tone Match in three steps** above the block's controls: capture the reference, capture your

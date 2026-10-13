@@ -5,11 +5,12 @@
 
 use std::collections::BTreeMap;
 
+use axegrid_device::SessionError;
 use axegrid_model::curves;
 use axegrid_model::defs::RAW_MAX;
 use axegrid_model::eq::leading_number;
 use axegrid_model::{blocks, params};
-use axegrid_sysex::{ModifierValue, ParamAddress};
+use axegrid_sysex::{function, ModifierValue, ParamAddress};
 use serde_json::{json, Value};
 
 use crate::command::{connected, opt, req, Args, CommandError, CommandSpec};
@@ -75,6 +76,12 @@ fn highest(selector: u16) -> u16 {
     }
 }
 
+/// A parameter as the history names it, such as "Amp 1 Drive".
+fn param_label(address: ParamAddress) -> String {
+    let name = blocks::by_id(address.block).map(|b| params::label(b.effect_type, address.param));
+    format!("{} {}", blocks::label(address.block), name.unwrap_or_default()).trim_end().to_owned()
+}
+
 fn field_by_key(key: &str) -> Option<u16> {
     FIELDS.iter().find(|field| field.1 == key).map(|field| field.0)
 }
@@ -127,15 +134,52 @@ impl Engine {
         }
     }
 
-    /// Reads every field of the modifier on a parameter and opens it.
-    fn read_modifier(&mut self, address: ParamAddress) -> Result<(), CommandError> {
+    /// Reads every field the editor shows of the modifier on a parameter.
+    fn modifier_fields(&mut self, address: ParamAddress) -> Result<Vec<ModifierValue>, CommandError> {
         let mut fields = Vec::with_capacity(FIELDS.len());
         for (selector, ..) in FIELDS {
             fields.push(self.session()?.modifier(address, *selector)?);
         }
+        Ok(fields)
+    }
+
+    /// Reads every field of the modifier on a parameter and opens it.
+    fn read_modifier(&mut self, address: ParamAddress) -> Result<(), CommandError> {
+        let fields = self.modifier_fields(address)?;
         self.modifier = Some(Open { address, fields: fields.clone() });
         fields.iter().for_each(|field| self.note_modifier(field));
         Ok(())
+    }
+
+    /// Takes the modifier off a parameter and returns its source field as
+    /// the device then reports it. The device puts the other fields back to
+    /// their defaults as the source goes, so they are remembered with it and
+    /// the removal is one step to undo.
+    fn remove_modifier(&mut self, address: ParamAddress) -> Result<ModifierValue, CommandError> {
+        let before = self.modifier_fields(address)?;
+        let raw = |fields: &[ModifierValue], selector: u16| {
+            fields.iter().find(|field| field.field == selector).and_then(|field| u16::try_from(field.value).ok())
+        };
+        if raw(&before, SOURCE) != Some(NO_SOURCE) {
+            self.session()?.set_modifier(address, SOURCE, NO_SOURCE)?;
+        }
+        let after = self.modifier_fields(address)?;
+        after.iter().for_each(|field| self.note_modifier(field));
+        // Undone last to first: the source goes back on before the fields
+        // its removal reset.
+        let others = FIELDS.iter().map(|field| field.0).filter(|&selector| selector != SOURCE);
+        let edits = others
+            .chain([SOURCE])
+            .filter_map(|field| match (raw(&before, field), raw(&after, field)) {
+                (Some(before), Some(after)) if before != after => {
+                    Some(Edit::Modifier { address, field, before, after })
+                }
+                _ => None,
+            })
+            .collect();
+        self.record(format!("Remove modifier of {}", param_label(address)), Edit::Group(edits));
+        let unread = SessionError::UnexpectedReply { function: function::MODIFIER };
+        after.into_iter().find(|field| field.field == SOURCE).ok_or(CommandError::Device(unread))
     }
 
     /// Sets one field and remembers the edit.
@@ -161,9 +205,8 @@ impl Engine {
         if let (Ok(before), Ok(after)) = (u16::try_from(before), u16::try_from(applied.value)) {
             if before != after {
                 let label = FIELDS.iter().find(|field| field.0 == selector).map_or("Field", |field| field.2);
-                let name = blocks::by_id(address.block).map(|b| params::label(b.effect_type, address.param));
-                let what = format!("Modifier {label} of {} {}", blocks::label(address.block), name.unwrap_or_default());
-                self.record(what.trim_end().to_owned(), Edit::Modifier { address, field: selector, before, after });
+                let what = format!("Modifier {label} of {}", param_label(address));
+                self.record(what, Edit::Modifier { address, field: selector, before, after });
             }
         }
         Ok(applied)
@@ -260,10 +303,7 @@ fn attach(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
 
 fn remove(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
     let address = target(engine, args)?;
-    engine.set_modifier_field(address, SOURCE, NO_SOURCE)?;
-    if engine.modifier.as_ref().is_some_and(|open| open.address == address) {
-        engine.read_modifier(address)?;
-    }
+    engine.remove_modifier(address)?;
     Ok(json!({ "block": address.block, "param": address.param, "attached": false }))
 }
 
@@ -274,7 +314,13 @@ fn set(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
         name: "field",
         problem: format!("{key:?} is not one of {}", FIELDS.iter().map(|f| f.1).collect::<Vec<_>>().join(", ")),
     })?;
-    let applied = engine.set_modifier_field(address, selector, args.int("value", u64::from(RAW_MAX))? as u16)?;
+    let raw = args.int("value", u64::from(RAW_MAX))? as u16;
+    // Stepping the source down to none is a removal, with all it resets.
+    let applied = if (selector, raw) == (SOURCE, NO_SOURCE) {
+        engine.remove_modifier(address)?
+    } else {
+        engine.set_modifier_field(address, selector, raw)?
+    };
     Ok(
         json!({ "block": address.block, "param": address.param, "field": key, "value": applied.value, "text": applied.text }),
     )
@@ -327,9 +373,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         menu: "",
         shortcut: "",
         doc: "Attach a controller to a parameter in the edit buffer by setting the modifier's source. The \
-              device names the sources; 0 is none, and the numbering is the device's own. Written from \
-              public documentation of the message: setting a modifier field has not yet been confirmed \
-              on a unit.",
+              device names the sources; 0 is none, and the numbering is the device's own. Confirmed on a \
+              unit with its first source.",
         params: &[
             BLOCK,
             PARAM,
@@ -343,8 +388,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         label: "Remove Modifier",
         menu: "",
         shortcut: "",
-        doc: "Take the modifier off a parameter in the edit buffer by setting its source to none. Its \
-              other fields keep their values on the device. Not yet confirmed on a unit.",
+        doc: "Take the modifier off a parameter in the edit buffer by setting its source to none. The \
+              device puts the modifier's other fields back to their defaults; undoing the removal \
+              brings them back with the source.",
         params: &[BLOCK, PARAM],
         enabled: connected,
         run: remove,
@@ -355,7 +401,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         menu: "",
         shortcut: "",
         doc: "Set one field of a modifier to a raw value and return what the device applied, with its \
-              text. Not yet confirmed on a unit.",
+              text. Setting the source to 0 removes the modifier, as modifier.remove does.",
         params: &[
             BLOCK,
             PARAM,

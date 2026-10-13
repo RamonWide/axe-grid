@@ -576,13 +576,17 @@ impl SimDevice {
                 }
                 let key = (self.current, block, param);
                 let fields = self.modifiers.entry(key).or_insert_with(|| modifier_defaults(block, param));
-                let slot = &mut fields[usize::from(field)];
                 if set != 0 {
                     // A source past the last one is the last one.
-                    *slot = if field == 0 { value.min(SIM_SOURCES.len() as u16 - 1) } else { value };
+                    fields[usize::from(field)] =
+                        if field == 0 { value.min(SIM_SOURCES.len() as u16 - 1) } else { value };
+                    // As on a unit: with the source gone, the rest is as new.
+                    if (field, value) == (0, 0) {
+                        *fields = modifier_defaults(block, param);
+                    }
                     self.edited = true;
                 }
-                let raw = *slot;
+                let raw = fields[usize::from(field)];
                 let mut payload = Vec::new();
                 for part in [block, param, field] {
                     put_uint(&mut payload, part.into(), 2);

@@ -4,13 +4,14 @@
 //!
 //! usage: cargo run -p axegrid-device --example hwtest -- "<midi in>" "<midi out>" <stage> [block] [arg]
 //! stages: state | param | bypass | xy | scene | preset | rename | place | disconnect
+//!         name | select | modget | modset (these four put nothing back)
 
 use std::time::{Duration, Instant};
 
 use axegrid_device::midi::MidiTransport;
 use axegrid_device::Transport;
 use axegrid_model::{blocks, params};
-use axegrid_sysex::{Frame, ParamAddress, Reply, Request, XyState};
+use axegrid_sysex::{Frame, ParamAddress, Reply, Request, XyState, MODIFIER_FIELDS};
 
 /// How long to listen after each message.
 const LISTEN: Duration = Duration::from_millis(700);
@@ -82,6 +83,16 @@ impl Bench {
             _ => None,
         }))
     }
+}
+
+/// Reads a modifier field from the command line. A unit asked for a field
+/// past the last one stopped answering, so nothing else gets through.
+fn modifier_field(arg: Option<&String>) -> Result<u16, Box<dyn std::error::Error>> {
+    let field: u16 = arg.ok_or("a modifier field, 0 to 14, is needed")?.parse()?;
+    if field >= MODIFIER_FIELDS {
+        return Err(format!("{field} is not a modifier field; the last one is {}", MODIFIER_FIELDS - 1).into());
+    }
+    Ok(field)
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -259,6 +270,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             bench.ask("looper status off", &Request::LooperStatus(false))?;
+        }
+        "name" => {
+            // name <preset>: read-only, the name of a stored preset without loading it.
+            bench.ask("name of the stored preset", &Request::PresetNameAt(block))?;
+        }
+        "select" => {
+            // select <preset>: loads a preset and stays there. Whatever was
+            // edited in the buffer is dropped, so the flag is shown first.
+            bench.edited("before leaving")?;
+            bench.ask("select preset", &Request::SelectPreset(block))?;
+            bench.state()?;
+        }
+        "modget" => {
+            // modget <block> <param> <field>: read-only, one field per run.
+            let address = ParamAddress { block, param: number.ok_or("modget needs a block and a parameter")? };
+            let field = modifier_field(rest.get(2))?;
+            bench.ask(&format!("modifier field {field}"), &Request::Modifier { address, field, value: None })?;
+            bench.edited("after the read")?;
+        }
+        "modset" => {
+            // modset <block> <param> <field> <value>: the one write of the
+            // run. Read it back with modget in a run of its own.
+            let address = ParamAddress { block, param: number.ok_or("modset needs a block and a parameter")? };
+            let field = modifier_field(rest.get(2))?;
+            let value: u16 = rest.get(3).ok_or("modset needs a value")?.parse()?;
+            let replies = bench.ask(
+                &format!("set modifier field {field} to {value}"),
+                &Request::Modifier { address, field, value: Some(value) },
+            )?;
+            println!("\nRESULT field={field} value={value} answered={}", !replies.is_empty());
         }
         "disconnect" => {
             bench.ask("disconnect", &Request::Disconnect)?;

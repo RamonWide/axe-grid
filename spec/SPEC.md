@@ -333,12 +333,26 @@ answered no other message afterwards until it was switched off and on. The
 Windows MIDI service was left unable to open ports as well. Nothing on the
 unit was changed. Only selectors 0 to 14 exist.
 
-[P] With `set = 1` the field takes the value and the reply reports what is in
-force, as `02` does for a parameter. A modifier is attached by setting
-selector 0 to a source other than 0 and removed by setting it back to 0.
-**None of this has been sent to a unit.** [?] The numbering and the number of
-sources, what the device answers for a parameter that cannot take a modifier,
-and how many modifiers a preset may hold (status `NO_MODIFIERS_LEFT` exists).
+[H] With `set = 1` the field takes the value and the reply reports what is in
+force, with its text, as `02` does for a parameter. Sent to an XL on firmware
+32.00 for Amp 1's input drive, in the edit buffer of an empty preset, one
+message per connection:
+
+| Sent | Reply | Read back afterwards |
+|---|---|---|
+| selector 0 = 1 | 1, `LFO 1A` | 1, `LFO 1A`; every other field as in the table above |
+| selector 4 = 40000 | 40000, `61.0 %` | the same |
+| selector 10 = 1 | 1, `SLOW SPD` | the same |
+| selector 0 = 0 | 0, `NONE` | 0, `NONE`; selector 4 back at 32767, selector 10 back at 0 |
+
+So a modifier is attached by setting selector 0 to a source other than 0 and
+removed by setting it back to 0, and **removing it puts its other fields back
+to their defaults**. The preset-edited flag (`2A`) is set afterwards.
+
+[?] The numbering of the sources past the first and their number, whether a
+field can be set while the source is none, what the device answers for a
+parameter that cannot take a modifier, and how many modifiers a preset may
+hold (status `NO_MODIFIERS_LEFT` exists).
 
 [P] The owner's manual lists 23 sources besides none (four LFO outputs, two
 ADSRs, the sequencer, the envelope follower, the pitch detector, twelve

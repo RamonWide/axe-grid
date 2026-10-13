@@ -249,9 +249,21 @@ fn a_modifier_is_attached_edited_and_removed() {
     let removed = engine.run("modifier.remove", &Value::Null).unwrap();
     assert_eq!(removed["attached"], false);
     assert_eq!(engine.inspect()["modifier"]["attached"], false);
-    engine.run("edit.undo", &Value::Null).unwrap();
+    // The device put the rest back to its defaults; one undo returns all of it.
+    let start = |modifier: &Value| {
+        let fields = modifier["fields"].as_array().unwrap();
+        fields.iter().find(|field| field["key"] == "start").unwrap()["value"].clone()
+    };
+    assert_eq!(start(&engine.inspect()["modifier"]), 0);
+    assert_eq!(engine.run("edit.undo", &Value::Null).unwrap()["undone"], "Remove modifier of Amp 1 Drive");
     let again = engine.run("modifier.open", &json!({ "block": AMP, "param": DRIVE })).unwrap();
     assert_eq!(again["attached"], true);
+    assert_eq!(start(&again), 65534);
+    // Stepping the source down to none removes it the same way.
+    let stepped = engine.run("modifier.set", &json!({ "field": "source", "value": 0 })).unwrap();
+    assert_eq!((stepped["value"].as_u64(), start(&engine.inspect()["modifier"])), (Some(0), json!(0)));
+    engine.run("edit.undo", &Value::Null).unwrap();
+    assert_eq!(engine.run("modifier.open", &json!({ "block": AMP, "param": DRIVE })).unwrap()["attached"], true);
     engine.run("modifier.close", &Value::Null).unwrap();
     assert_eq!(engine.inspect()["modifier"], Value::Null);
 }

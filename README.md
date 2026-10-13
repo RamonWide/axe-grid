@@ -39,8 +39,8 @@
 
 > [!IMPORTANT]
 > **Status: early alpha.** Axe-Grid edits presets on real hardware today, but it is not yet a
-> replacement for the original editor: modifiers are new and not yet confirmed on a unit, and
-> there are no global settings and no meters. It has been tested on one Axe-Fx II XL (firmware 32.00) on Windows; the macOS and Linux
+> replacement for the original editor: modifiers are new and only their basics are confirmed on a
+> unit, and there are no global settings and no meters. It has been tested on one Axe-Fx II XL (firmware 32.00) on Windows; the macOS and Linux
 > builds compile from the same code but nobody has run them against a unit yet.
 > [ROADMAP.md](ROADMAP.md) says exactly where things stand. Back up your presets before pointing
 > any new editor at an instrument you depend on.
@@ -183,8 +183,9 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
   </tr>
 </table>
 
-New and still to be confirmed on a unit: modifiers, scene and block copy and paste, the looper's
-position bar and the Tone Match steps. Not there yet: resetting a block, bank files, meters and
+New and still to be confirmed on a unit: scene and block copy and paste, the looper's position bar
+and the Tone Match steps; of modifiers, everything past attaching the first source, two of the
+fields and removing. Not there yet: resetting a block, bank files, meters and
 global settings.
 The full list, ranked, is in [ROADMAP.md](ROADMAP.md).
 

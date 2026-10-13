@@ -1,8 +1,8 @@
 //! Blocks and their parameters.
 
 use axegrid_model::defs::RAW_MAX;
-use axegrid_model::{blocks, grid, params};
-use axegrid_sysex::{ParamAddress, Request, XyState};
+use axegrid_model::{blocks, grid, params, Grid};
+use axegrid_sysex::{GridCell, ParamAddress, Request, XyState};
 use serde_json::{json, Value};
 
 use crate::command::{connected, opt, req, Args, CommandError, CommandSpec};
@@ -299,6 +299,131 @@ fn carry_block(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandErr
     Ok(json!({ "block": moved, "column": to_column, "row": to_row }))
 }
 
+/// Reads the `cells` argument: a list of `{column, row}`, each cell once.
+fn cells_arg(args: &Args<'_>) -> Result<Vec<(usize, usize)>, CommandError> {
+    let bad = |problem: &str| CommandError::BadParam { name: "cells", problem: problem.to_owned() };
+    let listed = args
+        .raw("cells")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("expected a list of cells such as [{\"column\": 1, \"row\": 0}]"))?;
+    let mut cells: Vec<(usize, usize)> = Vec::new();
+    for item in listed {
+        let cell = cell_arg(&Args(item))?;
+        if !cells.contains(&cell) {
+            cells.push(cell);
+        }
+    }
+    if cells.is_empty() {
+        return Err(bad("names no cell"));
+    }
+    Ok(cells)
+}
+
+/// Reads a signed step of at most `most` cells either way; none given is none.
+fn step_arg(args: &Args<'_>, name: &'static str, most: usize) -> Result<isize, CommandError> {
+    let Some(given) = args.raw(name) else { return Ok(0) };
+    match given.as_i64() {
+        Some(step) if step.unsigned_abs() <= most as u64 => Ok(step as isize),
+        Some(step) => Err(CommandError::BadParam { name, problem: format!("{step} is outside -{most}..={most}") }),
+        None => Err(CommandError::BadParam { name, problem: "expected an integer".into() }),
+    }
+}
+
+fn move_blocks(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
+    let cells = cells_arg(args)?;
+    let label = match cells.as_slice() {
+        [(column, row)] => format!("Move {}", blocks::label(engine.state.preset.grid.cell(*column, *row).block)),
+        many => format!("Move {} Blocks", many.len()),
+    };
+    engine.recording_grid(|| label, |engine| shift_blocks(engine, &cells, args))
+}
+
+/// Moves the blocks in `cells` by one offset. Nothing is sent unless every
+/// one of them has somewhere to go. The grid that should result is worked
+/// out first and the device is then brought to it the way an undo is, with
+/// the same two messages: shunts are lifted before they are put down again
+/// and a block only goes to a cell that is free, so no ID is ever in two
+/// cells and no block is pushed off the grid on the way.
+fn shift_blocks(engine: &mut Engine, cells: &[(usize, usize)], args: &Args<'_>) -> Result<Value, CommandError> {
+    let dx = step_arg(args, "dx", grid::COLUMNS - 1)?;
+    let dy = step_arg(args, "dy", grid::ROWS - 1)?;
+    let before = engine.state.preset.grid.clone();
+    let block_at = |(column, row): (usize, usize)| before.cell(column, row).block;
+    // Each moved cell with the cell it goes to.
+    let mut moves: Vec<((usize, usize), (usize, usize))> = Vec::new();
+    for &(column, row) in cells {
+        let moved = block_at((column, row));
+        if moved == blocks::EMPTY {
+            return Err(CommandError::NotFound(format!("cell {column}, {row} is empty")));
+        }
+        let to_column = column.checked_add_signed(dx).filter(|&to| to < grid::COLUMNS);
+        let to_row = row.checked_add_signed(dy).filter(|&to| to < grid::ROWS);
+        let (Some(to_column), Some(to_row)) = (to_column, to_row) else {
+            let (name, step) = if to_column.is_none() { ("dx", dx) } else { ("dy", dy) };
+            return Err(CommandError::BadParam {
+                name,
+                problem: format!("{step} would take {} at cell {column}, {row} off the grid", blocks::label(moved)),
+            });
+        };
+        let there = block_at((to_column, to_row));
+        if there != blocks::EMPTY && !cells.contains(&(to_column, to_row)) {
+            return Err(CommandError::BadParam {
+                name: if dx != 0 { "dx" } else { "dy" },
+                problem: format!(
+                    "cell {to_column}, {to_row} is taken by {}, which is not one of the blocks being moved",
+                    blocks::label(there)
+                ),
+            });
+        }
+        moves.push(((column, row), (to_column, to_row)));
+    }
+    let report = || {
+        let moved: Vec<Value> =
+            moves.iter().map(|&(from, to)| json!({ "block": block_at(from), "column": to.0, "row": to.1 })).collect();
+        json!({ "moved": moved, "dx": dx, "dy": dy })
+    };
+    if (dx, dy) == (0, 0) {
+        return Ok(report());
+    }
+
+    let arrives_from = |cell: (usize, usize)| moves.iter().find(|&&(_, to)| to == cell).map(|&(from, _)| from);
+    let touched = |cell: (usize, usize)| cells.contains(&cell) || arrives_from(cell).is_some();
+    // What a cell holds afterwards, and the cell that came from.
+    let origin = |cell: (usize, usize)| arrives_from(cell).unwrap_or(cell);
+    let block_after = |cell: (usize, usize)| match arrives_from(cell) {
+        Some(from) => block_at(from),
+        None if cells.contains(&cell) => blocks::EMPTY,
+        None => block_at(cell),
+    };
+    let mut wanted: Vec<GridCell> = Vec::with_capacity(grid::CELLS);
+    for column in 0..grid::COLUMNS {
+        for row in 0..grid::ROWS {
+            let cell = (column, row);
+            let block = block_after(cell);
+            let mut routing = before.cell(column, row).routing;
+            for from in (0..grid::ROWS).filter(|_| column > 0) {
+                let feeder = (column - 1, from);
+                // A cable neither end of which moves is left as it is.
+                if !touched(cell) && !touched(feeder) {
+                    continue;
+                }
+                // A cable is kept when both ends are still there and still a
+                // column apart: always between two blocks that move together,
+                // and for a neighbour that stays only when the move is up or down.
+                let (here, there) = (origin(cell), origin(feeder));
+                let fed = block != blocks::EMPTY
+                    && block_after(feeder) != blocks::EMPTY
+                    && there.0 + 1 == here.0
+                    && before.is_fed_by(here.0, here.1, there.1);
+                routing = if fed { routing | 1 << from } else { routing & !(1 << from) };
+            }
+            wanted.push(GridCell { block, routing });
+        }
+    }
+    engine.rebuild_grid(&Grid::from_cells(&wanted))?;
+    Ok(report())
+}
+
 /// Fills the empty cells of `row` across `columns` with shunts and cables
 /// every cell in that span to its left-hand neighbour in the same row.
 fn run_cable(engine: &mut Engine, row: usize, columns: std::ops::RangeInclusive<usize>) -> Result<Value, CommandError> {
@@ -557,6 +682,25 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: move_block,
     },
     CommandSpec {
+        id: "grid.move_blocks",
+        label: "Move Blocks",
+        menu: "",
+        shortcut: "",
+        doc: "Move several blocks and shunts together by the same number of columns and rows, as one \
+              edit that undoes in one step. All of them move or none does: it is refused if any would \
+              leave the grid or land on a block that is not itself being moved. Cables between the \
+              moved blocks go with them. A cable to a block that stays is kept when the move is only \
+              up or down, and dropped when the blocks change column, because a cable only joins \
+              neighbouring columns. Changes the grid of the edit buffer on the device; nothing is stored.",
+        params: &[
+            req("cells", "array", "The cells to move, each as {\"column\": 0 to 11, \"row\": 0 to 3}"),
+            opt("dx", "integer", "Columns to the right, -11 to 11; negative is left. Defaults to 0"),
+            opt("dy", "integer", "Rows down, -3 to 3; negative is up. Defaults to 0"),
+        ],
+        enabled: connected,
+        run: move_blocks,
+    },
+    CommandSpec {
         id: "grid.connect_to_input",
         label: "Connect to Input",
         menu: "",
@@ -597,3 +741,103 @@ pub const COMMANDS: &[CommandSpec] = &[
         run: disconnect_cells,
     },
 ];
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use axegrid_device::{Session, SimDevice, Transport};
+    use axegrid_sysex::Model;
+
+    use super::*;
+
+    /// The simulated device, with every message sent to it kept.
+    struct Watched {
+        device: SimDevice,
+        sent: Arc<Mutex<Vec<Vec<u8>>>>,
+    }
+
+    impl Transport for Watched {
+        fn send(&mut self, message: &[u8]) -> std::io::Result<()> {
+            self.sent.lock().unwrap().push(message.to_vec());
+            self.device.send(message)
+        }
+
+        fn receive(&mut self, timeout: Duration) -> std::io::Result<Option<Vec<u8>>> {
+            self.device.receive(timeout)
+        }
+    }
+
+    fn watched() -> (Engine, Arc<Mutex<Vec<Vec<u8>>>>) {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let transport = Watched { device: SimDevice::new(Model::AxeFx2Xl), sent: sent.clone() };
+        let boxed: Box<dyn Transport> = Box::new(transport);
+        let mut engine = Engine::new();
+        engine.attach(Session::connect(boxed).unwrap(), true).unwrap();
+        (engine, sent)
+    }
+
+    fn layout(engine: &Engine) -> Vec<u16> {
+        let view = &engine.state.preset.grid;
+        (0..grid::CELLS).map(|at| view.cell(at / grid::ROWS, at % grid::ROWS).block).collect()
+    }
+
+    /// Follows the "place block" messages in `sent` from `cells` on, the
+    /// way a unit takes them, and fails if one ever puts an ID in two cells
+    /// or lands on a cell that is taken.
+    fn replay(cells: &mut [u16], sent: &[Vec<u8>]) -> usize {
+        let place = Request::PlaceBlock { block: 0, cell: 0 }.to_frame(0).function;
+        let mut placed = 0;
+        for message in sent.iter().filter(|m| m.get(5) == Some(&place)) {
+            let block = u16::from(message[6]) | u16::from(message[7]) << 7;
+            let cell = usize::from(message[8]);
+            if block != blocks::EMPTY {
+                assert_eq!(cells[cell], blocks::EMPTY, "block {block} was put on a taken cell {cell}");
+                if blocks::is_shunt(block) {
+                    assert!(!cells.contains(&block), "shunt {block} was in two cells at once");
+                }
+                // A block that is in the grid already moves.
+                cells.iter_mut().filter(|held| **held == block).for_each(|held| *held = blocks::EMPTY);
+            }
+            cells[cell] = block;
+            let mut ids: Vec<u16> = cells.iter().copied().filter(|&id| id != blocks::EMPTY).collect();
+            ids.sort_unstable();
+            let held = ids.len();
+            ids.dedup();
+            assert_eq!(held, ids.len(), "an ID was in two cells after placing {block} in cell {cell}");
+            placed += 1;
+        }
+        placed
+    }
+
+    #[test]
+    fn a_group_move_never_repeats_an_id_on_the_wire() {
+        let (mut engine, sent) = watched();
+        let cells = |columns: std::ops::Range<usize>, row: usize| -> Value {
+            columns.map(|column| json!({ "column": column, "row": row })).collect()
+        };
+        // The whole chain, five blocks and seven shunts, one row down; then
+        // most of it one column along its own row, onto cells it is leaving;
+        // then back again, and the moves undone and redone.
+        let steps: [(&str, Value); 7] = [
+            ("grid.move_blocks", json!({ "cells": cells(0..12, 1), "dy": 1 })),
+            ("grid.clear_cell", json!({ "column": 11, "row": 2 })),
+            ("grid.move_blocks", json!({ "cells": cells(1..11, 2), "dx": 1 })),
+            ("grid.move_blocks", json!({ "cells": cells(2..12, 2), "dx": -1 })),
+            ("edit.undo", Value::Null),
+            ("edit.undo", Value::Null),
+            ("edit.redo", Value::Null),
+        ];
+        for (id, params) in steps {
+            let mut model = layout(&engine);
+            sent.lock().unwrap().clear();
+            engine.run(id, &params).unwrap();
+            let placed = replay(&mut model, &sent.lock().unwrap());
+            assert!(placed > 0, "{id} placed nothing");
+            // What was sent accounts for where everything is now.
+            assert_eq!(model, layout(&engine), "{id}");
+        }
+    }
+}

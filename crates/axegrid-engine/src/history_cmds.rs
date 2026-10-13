@@ -234,7 +234,7 @@ impl Engine {
 
     /// Brings the device's grid to `target` by placing blocks and drawing
     /// cables. No shunt ID is ever in two cells at once.
-    fn rebuild_grid(&mut self, target: &Grid) -> Result<(), CommandError> {
+    pub(crate) fn rebuild_grid(&mut self, target: &Grid) -> Result<(), CommandError> {
         let cells = || (0..grid::COLUMNS).flat_map(|column| (0..grid::ROWS).map(move |row| (column, row)));
         let at = |column: usize, row: usize| column * grid::ROWS + row;
         let place = |engine: &mut Engine, block: u16, column: usize, row: usize| {
@@ -253,11 +253,20 @@ impl Engine {
                 now[at(column, row)] = blocks::EMPTY;
             }
         }
-        for (column, row) in cells() {
+        // A free cell is filled before one that another moving block still
+        // sits in, so that a group shifting along its own row or column
+        // never has a member knocked off the grid on the way. Blocks that
+        // trade places have no free cell; they go in grid order.
+        for _ in 0..grid::CELLS {
+            let waiting: Vec<(usize, usize)> = cells()
+                .filter(|&(column, row)| {
+                    let want = wanted[at(column, row)];
+                    want != blocks::EMPTY && now[at(column, row)] != want
+                })
+                .collect();
+            let free = waiting.iter().find(|&&(column, row)| now[at(column, row)] == blocks::EMPTY);
+            let Some(&(column, row)) = free.or(waiting.first()) else { break };
             let want = wanted[at(column, row)];
-            if want == blocks::EMPTY || now[at(column, row)] == want {
-                continue;
-            }
             place(self, want, column, row)?;
             now.iter_mut().filter(|block| **block == want).for_each(|block| *block = blocks::EMPTY);
             now[at(column, row)] = want;

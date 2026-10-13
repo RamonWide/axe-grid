@@ -100,18 +100,59 @@ pub fn muted(color: Color32) -> Color32 {
     Color32::from_rgb(mix(color.r(), PANEL.r()), mix(color.g(), PANEL.g()), mix(color.b(), PANEL.b()))
 }
 
+/// How bright `color` looks, from 0 (black) to 1 (white): the relative
+/// luminance of the web's contrast guidelines. Transparency is ignored.
+pub fn luminance(color: Color32) -> f32 {
+    let linear = |channel: u8| {
+        let level = f32::from(channel) / 255.0;
+        if level <= 0.04045 {
+            level / 12.92
+        } else {
+            ((level + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
+}
+
+/// How far apart two colours read, from 1 (the same) to 21 (black on white).
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (a, b) = (luminance(a), luminance(b));
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// The dark ink or `light`, whichever reads better on `fill`.
+fn ink_on(fill: Color32, light: Color32) -> Color32 {
+    if contrast(fill, ON_ACCENT) >= contrast(fill, light) {
+        ON_ACCENT
+    } else {
+        light
+    }
+}
+
+/// The colour for text drawn on `fill`: dark on a light fill such as the
+/// accent yellow, white on a dark one. Every text that sits on a coloured
+/// fill takes its colour from here, so the two cannot drift apart.
+pub fn text_on(fill: Color32) -> Color32 {
+    ink_on(fill, Color32::WHITE)
+}
+
 pub fn apply(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = PANEL;
     visuals.window_fill = PANEL;
     visuals.extreme_bg_color = BACKDROP;
     visuals.faint_bg_color = RAISED;
-    visuals.override_text_color = Some(TEXT);
+    // No `override_text_color`: it would also override the colour a selected
+    // widget asks for, and put light text on the accent fill. Each widget
+    // state names the text colour that suits its own fill instead.
+    visuals.override_text_color = None;
+    visuals.widgets.noninteractive.fg_stroke.color = ink_on(PANEL, TEXT);
+    visuals.widgets.open.fg_stroke.color = ink_on(visuals.widgets.open.bg_fill, TEXT);
     visuals.window_stroke = Stroke::new(1.0_f32, EDGE);
     visuals.window_corner_radius = RADIUS;
     visuals.menu_corner_radius = RADIUS;
     visuals.selection.bg_fill = ACCENT;
-    visuals.selection.stroke = Stroke::new(1.0_f32, ON_ACCENT);
+    visuals.selection.stroke = Stroke::new(1.0_f32, text_on(ACCENT));
     visuals.hyperlink_color = ACCENT;
     let widgets = &mut visuals.widgets;
     widgets.noninteractive.bg_stroke = Stroke::new(1.0_f32, EDGE);
@@ -120,6 +161,7 @@ pub fn apply(ctx: &egui::Context) {
     {
         state.bg_fill = fill;
         state.weak_bg_fill = fill;
+        state.fg_stroke.color = ink_on(fill, TEXT);
         state.corner_radius = RADIUS;
     }
     widgets.noninteractive.corner_radius = RADIUS;
@@ -145,6 +187,39 @@ mod tests {
         // Each category is used, so no insert submenu is empty.
         for category in Category::ALL {
             assert!(blocks::all().iter().any(|b| Category::of(b.effect_type) == category), "{category:?}");
+        }
+    }
+
+    #[test]
+    fn text_is_dark_on_light_fills_and_light_on_dark_ones() {
+        let light = |fill| luminance(text_on(fill)) > 0.5;
+        for fill in [ACCENT, LAMP_ON, Color32::YELLOW, Color32::WHITE, TEXT, CABLE] {
+            assert!(!light(fill), "{fill:?} wants dark text");
+            assert_eq!(text_on(fill), ON_ACCENT);
+        }
+        for fill in [BACKDROP, PANEL, RAISED, RAISED_HOT, EDGE, Color32::BLACK] {
+            assert!(light(fill), "{fill:?} wants light text");
+        }
+        // Whatever the fill, the text chosen for it stays readable.
+        let fills = Category::ALL.map(Category::color);
+        for fill in fills.into_iter().chain([ACCENT, LAMP_ON, DANGER, PANEL, RAISED, RAISED_HOT, EDGE]) {
+            assert!(contrast(fill, text_on(fill)) >= 4.0, "{fill:?}");
+        }
+        assert!((contrast(Color32::BLACK, Color32::WHITE) - 21.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn no_widget_state_puts_light_text_on_the_accent() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        let visuals = ctx.global_style().visuals.clone();
+        assert_eq!(visuals.override_text_color, None);
+        assert_eq!(visuals.selection.stroke.color, text_on(visuals.selection.bg_fill));
+        assert_eq!(visuals.selection.stroke.color, ON_ACCENT);
+        let widgets = &visuals.widgets;
+        for state in [&widgets.noninteractive, &widgets.inactive, &widgets.hovered, &widgets.active, &widgets.open] {
+            assert!(contrast(state.fg_stroke.color, state.bg_fill) >= 4.5);
+            assert!(contrast(state.fg_stroke.color, state.weak_bg_fill) >= 4.5);
         }
     }
 

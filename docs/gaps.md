@@ -206,6 +206,15 @@ Partly there:
   and have not been checked against a played string.
 - **Dragging blocks**: within a column cables follow the block; across
   columns the device drops them.
+- **Moving several blocks** (`grid.move_blocks`; Ctrl+click, Shift+click or
+  a rubber band to select, then drag or Alt+arrow): cables between the moved
+  blocks are redrawn, cables to blocks that stay are kept only for a move
+  up or down. It sends nothing new, only "place block" and "cable" in the
+  order an undo uses (shunts lifted first, blocks only onto free cells), and
+  a test replays what is sent to check that no ID is ever in two cells. It
+  has been run against the simulator only, **not yet on a unit**: that a
+  block keeps its settings and scene states when it is placed again in
+  another cell is what `grid.move_block` already relies on.
 - **Choice lists** are read from the device when a block is opened and kept
   until it disconnects; they are not saved, so each session reads them
   again. Over a 5-pin MIDI cable the cab list (one request per cab) will

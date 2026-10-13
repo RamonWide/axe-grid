@@ -82,7 +82,7 @@ fn preset_names(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandEr
         match engine.session()?.preset_name_at(number) {
             Ok(name) => {
                 read.push(json!({ "number": number, "name": name }));
-                engine.state.preset_names.insert(number, name);
+                engine.note_preset_name(number, name);
             }
             // The device has fewer slots than this model's table says.
             Err(SessionError::Rejected { .. }) => break,
@@ -150,7 +150,7 @@ fn preset_copy(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandErr
     engine.history.clear();
     engine.refresh_preset()?;
     let name = engine.state.preset.name.clone();
-    engine.state.preset_names.insert(to, name.clone());
+    engine.note_preset_name(to, name.clone());
     Ok(json!({ "from": from, "to": to, "name": name }))
 }
 

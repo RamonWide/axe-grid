@@ -80,6 +80,8 @@ fn disconnect(engine: &mut Engine, _: &Args<'_>) -> Result<Value, CommandError> 
         // Do not leave the unit muted in its tuner screen.
         let _ = engine.run("tuner.off", &Value::Null);
     }
+    // While the names it holds are still there to be written.
+    engine.save_name_cache();
     if let Some(session) = engine.session.take() {
         session.disconnect();
     }

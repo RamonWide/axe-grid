@@ -63,9 +63,9 @@ for each request it does not answer. So the window does not own the engine.
 - While a control is dragged it issues a set every frame. The shell sends one
   at a time for each parameter and keeps only the newest one waiting, and
   shows the value asked for until the device has answered.
-- Housekeeping (listening for the tuner and tempo, the load meter, names for
-  the managers, choice lists) is only handed over when nothing else is
-  waiting, so it never delays an edit by more than one short job.
+- Housekeeping (listening for the tuner and tempo, the load meter, checking
+  the preset and cab names, choice lists) is only handed over when nothing
+  else is waiting, so it never delays an edit by more than one short job.
 
 `Headless` (the CLI, MCP without a window) still owns an `Engine` directly
 and runs commands where it is called.
@@ -79,7 +79,10 @@ grid before and after. A pasted block is remembered as its settings before
 and after, and a pasted scene as the group of changes it made, undone in
 reverse. Undo sends the old value back; for the grid it places blocks and
 draws cables until the device's grid matches the remembered one, lifting
-shunts first so that no shunt ID is ever in two cells. Edits to one
+shunts first so that no shunt ID is ever in two cells, and filling free
+cells before taken ones so that a block on its way does not push another
+off the grid. `grid.move_blocks` works out the grid it wants and reaches it
+the same way. Edits to one
 parameter that follow each other within 0.6 s are one entry. The history
 belongs to the edit buffer: loading a preset, importing one or losing the
 device empties it. Commands that edit the preset record through
@@ -94,6 +97,42 @@ and scene names, which the device has no place for. A front end a person
 uses builds its engine with `Engine::for_this_computer()`, which keeps them
 in `scene-names.json` under the system's application-data folder; an engine
 made with `Engine::new()`, as the tests make it, writes nothing.
+
+### The name cache
+
+Reading the name of every preset and cab is one request for each slot, some
+two thousand on an XL, so the names are also kept on this computer
+(`name_cache.rs`, `names_cmds.rs`): one JSON file per kind of unit in the
+folder `name-cache` beside `scene-names.json`, called
+`names-<model byte>-fw<major>.<minor>.json` (the simulator's ends in
+`-simulator`). It holds the preset names by slot and the cab names by
+position in the unit's cab list, factory cabs included.
+
+- **On connecting** the file is taken into `State` before anything is read,
+  so the managers and the cab picker have their lists at once.
+  `State::name_scan` then says the names are `cached`.
+- **Afterwards** `library.scan` reads the unit again, a few names for each
+  call, from where the last call stopped; the place is kept by the engine,
+  not by a window. A name that differs is corrected. When every slot has
+  been read the names are `verified` and nothing more is asked. The window
+  hands over one small `library.scan` at a time and only when nothing else
+  is waiting and no control is held, like the rest of its housekeeping.
+  The device has no message that says a stored name has changed, so this
+  is a plain re-read; `library.rescan` starts it over.
+- **The file is written** when the check is complete, at most every five
+  seconds while names are being read, on `device.disconnect`, and at once
+  after `preset.store`, `preset.copy` and `cab.import`. It is written to a
+  draft and moved into place.
+- **It is ignored**, without a word, when it is missing, damaged, cut
+  short, of another format version, or says it belongs to another model,
+  firmware version or the simulator. The device reports no serial number:
+  two units of one model on one firmware share a file, and the check
+  after connecting corrects what differs. Deleting the folder is always
+  safe.
+- **Only slots the model has** are ever read from a file or asked of the
+  unit: the tables of `axegrid_model::library` bound both, a slot the unit
+  refuses ends its list for the session, and a model whose cab memory is
+  not known has no cab names cached.
 
 ## Modifiers
 
@@ -117,6 +156,15 @@ request (function `28`). The cab block's cab picker has none; its value is a
 position in the device's cab list, which is read name by name (function
 `12`). `block.read_lists` takes a budget of requests, so the window can read
 a little at a time between the user's edits.
+
+A list of more than 24 choices, and any cab control, is not a drop-down in
+the window but a button that opens a browser (`picker.rs`): a search box and
+the choices in columns. A click runs `param.set`, as a drop-down does, and
+leaves the browser open so that sounds can be auditioned. The editor's
+description of a cab control carries `cab_list`: the length of the cab list,
+how many names are read, and the number of factory and user cabs where the
+model's cabinet memory is known. From it the browser splits the cabs into
+Factory and User, and offers the user slots while names are still being read.
 
 ## The desktop control server
 

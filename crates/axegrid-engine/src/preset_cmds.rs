@@ -63,7 +63,7 @@ fn store(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
         engine.carry_scene_names(scenes, number);
     }
     let name = engine.state.preset.name.clone();
-    engine.state.preset_names.insert(number, name);
+    engine.note_preset_name(number, name);
     Ok(json!({ "stored_to": number }))
 }
 

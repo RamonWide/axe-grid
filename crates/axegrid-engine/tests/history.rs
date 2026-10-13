@@ -293,3 +293,40 @@ fn the_cab_list_is_read_name_by_name() {
     assert_eq!(library["cab_names_known"], 1024);
     assert_eq!(engine.state().cab_names.get(&1).map(String::as_str), Some("Sim 4x12"));
 }
+
+/// The control of the block editor that shows the parameter named `param`.
+fn editor_control(engine: &Engine, param: &str) -> Value {
+    let editor = engine.editor();
+    let pages = editor["pages"].as_array().unwrap().iter();
+    let rows = pages.flat_map(|page| page["rows"].as_array().unwrap().iter());
+    let mut controls = rows.flat_map(|row| row["controls"].as_array().unwrap().iter());
+    controls.find(|control| control["name"] == param).cloned().unwrap_or(Value::Null)
+}
+
+#[test]
+fn a_cab_control_says_how_much_of_the_cab_list_is_read() {
+    let mut engine = connected();
+    engine.run("block.select", &json!({ "block": "Cab 1" })).unwrap();
+    // Nothing has been asked yet, so the control is not known to pick a cab.
+    assert_eq!(editor_control(&engine, "CABINET_TYPEL")["cab_list"], Value::Null);
+    engine.run("block.read_lists", &json!({ "budget": 300 })).unwrap();
+    let partly = editor_control(&engine, "CABINET_TYPEL");
+    assert_eq!(partly["choices"], Value::Null);
+    let list = &partly["cab_list"];
+    assert_eq!(
+        (list["total"].as_u64(), list["factory"].as_u64(), list["user"].as_u64()),
+        (Some(1217), Some(189), Some(1024))
+    );
+    let known = list["known"].as_u64().unwrap();
+    assert!((1..300).contains(&known), "{known}");
+
+    engine.run("block.read_lists", &Value::Null).unwrap();
+    let whole = editor_control(&engine, "CABINET_TYPEL");
+    assert_eq!(whole["cab_list"]["known"], 1217);
+    assert_eq!(whole["choices"].as_array().map(Vec::len), Some(1217));
+    // A list of the block's own is not a cab list.
+    engine.run("block.select", &json!({ "block": "Amp 1" })).unwrap();
+    engine.run("block.read_lists", &Value::Null).unwrap();
+    assert_eq!(engine.editor()["model"]["cab_list"], Value::Null);
+    assert!(engine.editor()["model"]["choices"].is_array());
+}

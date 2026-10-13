@@ -13,6 +13,8 @@ mod library_cmds;
 mod lists_cmds;
 mod live_cmds;
 mod modifier_cmds;
+mod name_cache;
+mod names_cmds;
 mod preset_cmds;
 mod scene_cmds;
 pub mod worker;
@@ -30,6 +32,7 @@ use serde_json::{json, Value};
 pub use axegrid_sysex::XyState;
 pub use command::{Args, CommandError, CommandSpec, ParamDoc};
 pub use live_cmds::TEMPO_RANGE;
+pub use names_cmds::NameScan;
 pub use worker::{View, Worker};
 
 /// Everything a front end may display. Changed only by commands.
@@ -62,6 +65,9 @@ pub struct State {
     pub preset_names: BTreeMap<u16, String>,
     /// Names of user cabs read so far, by cab number counted from 1.
     pub cab_names: BTreeMap<u16, String>,
+    /// How far the preset and cab names have been checked against the unit
+    /// since it connected; until then they may be last session's.
+    pub name_scan: NameScan,
 }
 
 /// What the device's tuner hears.
@@ -103,6 +109,8 @@ pub struct Engine {
     /// given its sources and switches.
     modifier: Option<modifier_cmds::Open>,
     modifier_seen: modifier_cmds::Seen,
+    /// The file that keeps preset and cab names between sessions.
+    names: names_cmds::Names,
 }
 
 /// All commands, in menu order.
@@ -115,6 +123,7 @@ pub fn registry() -> &'static [&'static CommandSpec] {
             preset_cmds::COMMANDS,
             scene_cmds::COMMANDS,
             library_cmds::COMMANDS,
+            names_cmds::COMMANDS,
             history_cmds::COMMANDS,
             edit_cmds::COMMANDS,
             block_cmds::COMMANDS,
@@ -141,7 +150,11 @@ impl Engine {
     /// `folder`. Without one nothing is written and such things last only
     /// as long as the engine.
     pub fn with_data_dir(folder: &std::path::Path) -> Self {
-        Self { scene_names: scene_cmds::SceneNames::kept_in(folder), ..Self::default() }
+        Self {
+            scene_names: scene_cmds::SceneNames::kept_in(folder),
+            names: names_cmds::Names::kept_in(folder),
+            ..Self::default()
+        }
     }
 
     /// An engine for a program a person uses: it keeps its data in
@@ -190,6 +203,7 @@ impl Engine {
         }
         let preset = self.state.preset.number;
         let result = (spec.run)(self, &Args(params));
+        self.names_after(spec.id);
         // A dead link must not leave the engine claiming to be connected.
         if let Err(CommandError::Device(axegrid_device::SessionError::Io(_))) = &result {
             self.session = None;
@@ -214,6 +228,7 @@ impl Engine {
         self.session = Some(session);
         self.state.firmware = self.session()?.firmware_version().ok();
         self.state.midi_channel = self.session()?.midi_channel().unwrap_or(0);
+        self.load_name_cache();
         self.refresh_preset()
     }
 
@@ -352,6 +367,10 @@ impl Engine {
         let effect = blocks::by_id(value.address.block).map(|b| b.effect_type);
         described["modifier"] =
             json!(effect.is_some_and(|effect| layouts::modifier_param(effect, value.address.param).is_some()));
+        // Only a control that picks from the device's cab list has this.
+        if let Some(cab_list) = effect.and_then(|effect| self.cab_list_json(effect, value.address.param)) {
+            described["cab_list"] = cab_list;
+        }
         described
     }
 
@@ -475,6 +494,7 @@ impl Engine {
                 "preset_names_known": s.preset_names.len(),
                 "user_cab_slots": s.model.and_then(axegrid_model::library::cab_slots).map(|slots| slots.user),
                 "cab_names_known": s.cab_names.len(),
+                "names": self.name_scan_json(),
             },
             "grid": cells,
             "blocks": states,

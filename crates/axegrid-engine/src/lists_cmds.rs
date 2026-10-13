@@ -90,6 +90,21 @@ impl Engine {
         self.lists.by_param.values().filter(|choices| **choices != Choices::None).count()
     }
 
+    /// For a parameter whose value is a position in the device's cab list:
+    /// how long the list is, how much of it has been read, and where the
+    /// user cabs sit in it on a model whose cabinet memory is known. A
+    /// front end needs it to offer the cabs before every name is in.
+    pub(crate) fn cab_list_json(&self, effect: u8, param: u16) -> Option<Value> {
+        let Some(Choices::CabList { highest }) = self.lists.by_param.get(&(effect, param)) else { return None };
+        let slots = self.state.model.and_then(axegrid_model::library::cab_slots);
+        Some(json!({
+            "total": u32::from(*highest) + 1,
+            "known": self.lists.cabs.range(..=*highest).count(),
+            "factory": slots.map(|slots| slots.factory),
+            "user": slots.map(|slots| slots.user),
+        }))
+    }
+
     pub(crate) fn forget_lists(&mut self) {
         self.lists = Lists::default();
     }
@@ -102,7 +117,29 @@ impl Engine {
         if let Some(slots) = user {
             self.state.cab_names.insert(index - slots.factory + 1, name.clone());
         }
+        if self.lists.cabs.get(&index) != Some(&name) && index < self.state.name_scan.cab_slots {
+            // The name file on this computer is behind now.
+            self.names_changed();
+        }
         self.lists.cabs.insert(index, name);
+        self.lists.rebuild_cab_choices();
+    }
+
+    /// Names in the device's cab list read or remembered so far, by position.
+    pub(crate) fn cab_list(&self) -> &BTreeMap<u16, String> {
+        &self.lists.cabs
+    }
+
+    /// Takes up cab names remembered from an earlier session, by position.
+    pub(crate) fn note_cached_cabs(&mut self, names: BTreeMap<u16, String>) {
+        let slots = self.state.model.and_then(axegrid_model::library::cab_slots);
+        for (index, name) in names {
+            let user = slots.filter(|slots| (slots.factory..slots.factory + slots.user).contains(&index));
+            if let Some(slots) = user {
+                self.state.cab_names.insert(index - slots.factory + 1, name.clone());
+            }
+            self.lists.cabs.insert(index, name);
+        }
         self.lists.rebuild_cab_choices();
     }
 

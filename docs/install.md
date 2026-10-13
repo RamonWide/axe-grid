@@ -130,6 +130,10 @@ Then:
 - **Add a block:** right-click an empty cell and choose from the list. Right-click a block to
   remove it.
 - **Move a block:** drag it to an empty cell.
+- **Move several blocks together:** hold **Ctrl** and click each one (or **Shift** and click to
+  take everything between two of them, or drag across them starting on an empty cell), then drag
+  any of them, or press **Alt** with an arrow key. The cables between them go along. A red
+  outline means they do not fit there. Click an empty cell or press **Escape** to let go of them.
 - **Cable two blocks:** hover the first block and click the **O** on its right, then click the
   **I** on the left of a block in the next column. To run a cable all the way to the start or the
   end of the grid, click a handle and then the **INPUT** or **OUTPUT** bar.

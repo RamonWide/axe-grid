@@ -15,6 +15,8 @@
 
 pub mod knob;
 mod library;
+mod picker;
+mod selection;
 pub mod theme;
 
 use std::collections::{BTreeMap, HashMap};
@@ -29,6 +31,7 @@ use egui::{
     pos2, vec2, Align, Align2, Color32, FontId, Key, KeyboardShortcut, Layout, Modifiers, Pos2, Rect, RichText,
 };
 use egui::{Sense, Stroke, StrokeKind, Vec2};
+use selection::Selection;
 use serde_json::{json, Value};
 use theme::Category;
 
@@ -55,6 +58,14 @@ const LIST_BUDGET: u64 = 8;
 /// A command that has kept the unit this long is shown as being waited for.
 const SLOW: Duration = Duration::from_millis(400);
 const SEARCHING: &str = "Looking for your Axe-Fx…";
+/// Height of a row of the header, which is that of its buttons.
+const HEADER_ROW: f32 = 24.0;
+/// The preset's name in the header: its text size, the height of its row,
+/// the width of each arrow beside it and the least width the name keeps.
+const PRESET_FONT: f32 = 20.0;
+const PRESET_HEIGHT: f32 = 34.0;
+const PRESET_ARROW: f32 = 38.0;
+const PRESET_NAME_MIN: f32 = 120.0;
 /// Width of one character of the small text in a control cell, roughly.
 const CHOICE_CHAR_WIDTH: f32 = 7.4;
 /// A fader's share of a cell's width.
@@ -123,12 +134,18 @@ fn modifier_key(field: &str) -> String {
 type CableEnd = (usize, usize, bool);
 
 /// What the user is in the middle of on the grid.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
 struct GridGesture {
     /// The cable end clicked first, while a cable is being drawn.
     cable: Option<CableEnd>,
-    /// The cell a block is being dragged from.
+    /// The cell the selected blocks are being dragged by.
     dragging: Option<(usize, usize)>,
+    /// The cells picked to be moved together.
+    selection: Selection,
+    /// Where a rubber band was started, while one is being pulled.
+    band: Option<Pos2>,
+    /// A move is on its way to the unit; the selection follows it once it has landed.
+    moving: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +208,8 @@ struct ControlView {
     sets: Vec<u64>,
     /// The parameter takes a modifier.
     modifier: bool,
+    /// Its value is a position in the unit's cab list.
+    cabs: bool,
 }
 
 impl ControlView {
@@ -209,6 +228,7 @@ impl ControlView {
             choices: serde_json::from_value(value["choices"].clone()).ok().flatten(),
             sets: value["sets"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect(),
             modifier: value["modifier"] == true,
+            cabs: value["cab_list"].is_object(),
         }
     }
 }
@@ -255,6 +275,8 @@ pub struct Shell {
     scene_rename: Option<(u8, String)>,
     scene_rename_needs_focus: bool,
     tone_read_at: Option<Instant>,
+    /// The browser of a long choice list, while it is open.
+    picker: Option<picker::Picker>,
 }
 
 /// Turns a registry shortcut such as `Ctrl+Right` or `F5` into an egui one.
@@ -302,8 +324,33 @@ fn cable_pair(pending: Option<CableEnd>, clicked: CableEnd) -> Option<(usize, us
 
 /// A button that reads as lit when `on`.
 fn lit_button(ui: &mut egui::Ui, text: &str, on: bool, lit: Color32) -> egui::Response {
-    let (fill, ink) = if on { (lit, theme::ON_ACCENT) } else { (theme::RAISED, theme::TEXT_DIM) };
+    let (fill, ink) = if on { (lit, theme::text_on(lit)) } else { (theme::RAISED, theme::TEXT_DIM) };
     ui.add(egui::Button::new(RichText::new(text).color(ink).strong()).fill(fill).min_size(vec2(28.0, 24.0)))
+}
+
+/// A button filled with `fill`, its text in the colour that reads on it.
+fn filled_button(text: &str, fill: Color32) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(theme::text_on(fill)).strong()).fill(fill)
+}
+
+/// Paints `text` with the middle of its ink, not of its line box, on
+/// `centre`. A line box leaves room for descenders, so a capital centred by
+/// it sits off the middle of a small circle or bar.
+fn centred_text(painter: &egui::Painter, centre: Pos2, text: &str, font: FontId, ink: Color32) {
+    let galley = painter.layout_no_wrap(text.to_owned(), font, ink);
+    let bounds = galley.mesh_bounds;
+    let middle = if bounds.is_finite() && bounds.is_positive() { bounds.center() } else { galley.rect.center() };
+    painter.galley(centre - middle.to_vec2(), galley, ink);
+}
+
+/// Cuts `text`, which is `drawn` points wide, to what fits in `room` points.
+fn fitted(text: &str, drawn: f32, room: f32) -> String {
+    let letters = text.chars().count();
+    if drawn <= room || letters == 0 {
+        return text.to_owned();
+    }
+    // `shorten` counts in letters of its own width, so hand it this text's.
+    shorten(text, room / (drawn / letters as f32) * CHOICE_CHAR_WIDTH)
 }
 
 impl Shell {
@@ -344,6 +391,7 @@ impl Shell {
             scene_rename: None,
             scene_rename_needs_focus: false,
             tone_read_at: None,
+            picker: None,
         };
         shell.submit("device.list_ports", Value::Null, true);
         shell.find_unit();
@@ -396,6 +444,13 @@ impl Shell {
             ("device.poll", _) => self.polling = false,
             ("device.connect_auto", _) => self.searching = false,
             ("block.select", _) => self.lists_failed = None,
+            ("grid.move_block" | "grid.move_blocks", outcome) => {
+                self.gesture.moving = false;
+                // The selection stays on the blocks it was on.
+                if let (Ok(_), Some(moved)) = (outcome, Selection::after(done.id, &done.params)) {
+                    self.gesture.selection = moved;
+                }
+            }
             ("block.read_lists", outcome) => {
                 self.reading_lists = false;
                 if outcome.is_err() {
@@ -407,7 +462,7 @@ impl Shell {
                     |key: &str| -> Vec<String> { serde_json::from_value(result[key].clone()).unwrap_or_default() };
                 (self.inputs, self.outputs) = (names("inputs"), names("outputs"));
             }
-            ("preset.names" | "cab.names" | "preset.export_range", _) if done.quiet => {
+            ("library.scan" | "preset.export_range", _) if done.quiet => {
                 return self.library_done(done.id, &done.params, &done.outcome);
             }
             _ => {}
@@ -480,7 +535,7 @@ impl Shell {
         if idle {
             self.library_work();
         }
-        let soon = if self.library.busy() || lists_wanted {
+        let soon = if self.library.busy(&self.view.state.name_scan) || lists_wanted {
             5
         } else if tuning {
             40
@@ -572,8 +627,7 @@ impl Shell {
                     }
                 });
         };
-        let find =
-            egui::Button::new(RichText::new("Find my Axe-Fx").color(theme::ON_ACCENT).strong()).fill(theme::ACCENT);
+        let find = filled_button("Find my Axe-Fx", theme::ACCENT);
         if ui.add(find).on_hover_text("Look on USB first, then on every MIDI port").clicked() {
             actions.push(("device.connect_auto", Value::Null));
         }
@@ -594,17 +648,26 @@ impl Shell {
         }
     }
 
-    fn preset_controls(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    /// The preset's number and name between the previous and next arrows.
+    /// It fills the width it is given: the name gets what the rest leaves.
+    fn preset_name(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let view = self.view.clone();
         let state = &view.state;
-        if ui.button("◀").on_hover_text("Previous preset").clicked() {
+        let arrow = |ui: &mut egui::Ui, glyph: &str| {
+            let text = RichText::new(glyph).size(PRESET_FONT);
+            ui.add(egui::Button::new(text).min_size(vec2(PRESET_ARROW, PRESET_HEIGHT)))
+        };
+        if arrow(ui, "◀").on_hover_text("Previous preset").clicked() {
             actions.push(("preset.previous", Value::Null));
         }
         let number = egui::TextEdit::singleline(&mut self.goto)
             .hint_text(format!("{:03}", state.preset.number))
-            .desired_width(34.0)
-            .font(FontId::monospace(14.0));
+            .desired_width(42.0)
+            .font(FontId::monospace(17.0));
         let number = ui.add(number).on_hover_text("Type a preset number and press Enter");
+        // Everything left but the next arrow and the gap before it.
+        let width = (ui.available_width() - PRESET_ARROW - ui.spacing().item_spacing.x).max(PRESET_NAME_MIN);
+        let font = FontId::proportional(PRESET_FONT);
         if number.lost_focus() {
             if let (true, Ok(wanted)) = (ui.input(|i| i.key_pressed(Key::Enter)), self.goto.trim().parse::<u16>()) {
                 actions.push(("preset.select", json!({ "number": wanted })));
@@ -613,7 +676,9 @@ impl Shell {
         }
         match &mut self.rename {
             Some(name) => {
-                let edit = ui.add(egui::TextEdit::singleline(name).desired_width(250.0).char_limit(32));
+                // The box is its text plus a margin of 4 points on each side.
+                let field = egui::TextEdit::singleline(name).desired_width(width - 8.0).font(font).char_limit(32);
+                let edit = ui.add(field);
                 if std::mem::take(&mut self.rename_needs_focus) {
                     edit.request_focus();
                 }
@@ -626,21 +691,34 @@ impl Shell {
             }
             None => {
                 let shown = if state.preset.name.is_empty() { "(unnamed)" } else { state.preset.name.as_str() };
-                let name = egui::Button::new(RichText::new(shown).size(15.0).strong()).min_size(vec2(250.0, 24.0));
-                if ui.add(name).on_hover_text("Click to rename").clicked() {
+                let drawn = ui.fonts_mut(|fonts| fonts.layout_no_wrap(shown.to_owned(), font, theme::TEXT)).size().x;
+                // A little under the button's inside, as letters differ in width.
+                let room = (width - 2.0 * ui.spacing().button_padding.x) * 0.94;
+                let cut = fitted(shown, drawn, room);
+                let hint =
+                    if cut == shown { "Click to rename".to_owned() } else { format!("{shown}\nClick to rename") };
+                let name = egui::Button::new(RichText::new(cut).size(PRESET_FONT).strong())
+                    .min_size(vec2(width, PRESET_HEIGHT));
+                if ui.add(name).on_hover_text(hint).clicked() {
                     self.rename = Some(state.preset.name.clone());
                     self.rename_needs_focus = true;
                 }
             }
         }
-        if ui.button("▶").on_hover_text("Next preset").clicked() {
+        if arrow(ui, "▶").on_hover_text("Next preset").clicked() {
             actions.push(("preset.next", Value::Null));
         }
+    }
+
+    fn preset_controls(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let view = self.view.clone();
+        // Laid out from the right: the buttons first, so that the preset's
+        // name can take all the room they leave.
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui.button("Disconnect").clicked() {
                 actions.push(("device.disconnect", Value::Null));
             }
-            let save = egui::Button::new(RichText::new("Save").color(theme::ON_ACCENT).strong()).fill(theme::ACCENT);
+            let save = filled_button("Save", theme::ACCENT);
             if ui.add(save).on_hover_text("Write the edit buffer to the device (asks first)").clicked() {
                 actions.push(("preset.store", Value::Null));
             }
@@ -666,6 +744,8 @@ impl Shell {
                     actions.push((command, Value::Null));
                 }
             }
+            ui.separator();
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| self.preset_name(ui, actions));
         });
     }
 
@@ -740,7 +820,12 @@ impl Shell {
     }
 
     fn header(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        ui.horizontal(|ui| {
+        // A row is given its full height up front: one that grows as taller
+        // things are added leaves the shorter ones above its middle.
+        let row =
+            |ui: &egui::Ui, height: f32| (vec2(ui.available_width(), height), Layout::left_to_right(Align::Center));
+        let (size, layout) = row(ui, if self.view.connected { PRESET_HEIGHT } else { HEADER_ROW });
+        ui.allocate_ui_with_layout(size, layout, |ui| {
             ui.label(RichText::new("AXE·GRID").size(18.0).strong().color(theme::ACCENT));
             let view = self.view.clone();
             let state = &view.state;
@@ -764,7 +849,8 @@ impl Shell {
         });
         if self.view.connected {
             ui.add_space(4.0);
-            ui.horizontal(|ui| self.performance_controls(ui, actions));
+            let (size, layout) = row(ui, HEADER_ROW);
+            ui.allocate_ui_with_layout(size, layout, |ui| self.performance_controls(ui, actions));
         }
     }
 
@@ -894,7 +980,7 @@ impl Shell {
         let ink = if takes.is_some() { theme::ACCENT } else { theme::TEXT_DIM };
         for (index, letter) in name.chars().enumerate() {
             let at = pos2(rect.center().x, top + step * index as f32);
-            painter.text(at, Align2::CENTER_CENTER, letter, font.clone(), ink);
+            centred_text(painter, at, letter.encode_utf8(&mut [0; 4]), font.clone(), ink);
         }
         let hint = match takes {
             Some(_) => format!("Click to run the cable to the {}", name.to_lowercase()),
@@ -920,7 +1006,7 @@ impl Shell {
         );
         let available = ui.available_size();
         let scale = grid_scale(available, natural);
-        let (outer, backdrop) = ui.allocate_exact_size(available.max(natural * scale), Sense::click());
+        let (outer, backdrop) = ui.allocate_exact_size(available.max(natural * scale), Sense::click_and_drag());
         let area = Rect::from_center_size(outer.center(), natural * scale);
         let (tile_size, pitch) = (TILE * scale, (TILE + TILE_GAP) * scale);
         let lead = (RAIL + TILE_GAP.x) * scale;
@@ -937,9 +1023,21 @@ impl Shell {
         };
         let painter = ui.painter_at(outer);
         let cable = Stroke::new(2.0 * scale, theme::CABLE);
-        let GridGesture { cable: mut pending, mut dragging } = self.gesture;
-        if backdrop.clicked() || backdrop.secondary_clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+        let GridGesture { cable: mut pending, mut dragging, mut selection, mut band, mut moving } = self.gesture;
+        let occupied = |(column, row): selection::Cell| view.grid.cell(column, row).block != blocks::EMPTY;
+        // A block that has gone, with another preset or an undo, is not selected any more.
+        selection = selection.pruned(occupied);
+        let escaped = ui.input(|i| i.key_pressed(Key::Escape));
+        let (ctrl, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
+        if backdrop.clicked() || backdrop.secondary_clicked() || escaped {
             pending = None;
+        }
+        if backdrop.clicked() || escaped {
+            // Escape also lets go of blocks that are being dragged.
+            (selection, dragging, band) = (Selection::default(), None, None);
+        }
+        if backdrop.drag_started() {
+            band = ui.input(|i| i.pointer.press_origin());
         }
 
         let rail_size = vec2(RAIL * scale, area.height());
@@ -978,36 +1076,30 @@ impl Shell {
         }
 
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        let cell_under = |at: Pos2| {
-            let cells = (0..grid::COLUMNS).flat_map(|column| (0..grid::ROWS).map(move |row| (column, row)));
-            cells.into_iter().find(|&(column, row)| tile(column, row).contains(at))
+        // The cell a point is nearest to, counted on beyond the grid's edges:
+        // each cell owns its tile and half the gap around it.
+        let cell_near = |at: Pos2| {
+            let from = at - area.min - vec2(lead, 0.0) + TILE_GAP * scale / 2.0;
+            ((from.x / pitch.x).floor() as isize, (from.y / pitch.y).floor() as isize)
         };
         for column in 0..grid::COLUMNS {
             for row in 0..grid::ROWS {
                 let rect = tile(column, row);
                 let id = view.grid.cell(column, row).block;
-                let sense = if id == blocks::EMPTY { Sense::click() } else { Sense::click_and_drag() };
-                let response = ui.interact(rect, ui.id().with(("cell", column, row)), sense);
+                // An empty cell is dragged from to pull a rubber band.
+                let response = ui.interact(rect, ui.id().with(("cell", column, row)), Sense::click_and_drag());
                 let block = blocks::by_id(id);
-                let lifted = dragging == Some((column, row));
-                // A cell a dragged block may be dropped on.
-                let landing = dragging.is_some() && id == blocks::EMPTY && pointer.is_some_and(|p| rect.contains(p));
+                let picked = selection.contains((column, row));
+                let lifted = dragging.is_some() && picked;
                 if id == blocks::EMPTY {
-                    let edge = if landing {
-                        theme::ACCENT
-                    } else if response.hovered() {
-                        theme::TEXT_DIM
-                    } else {
-                        theme::RAISED
-                    };
-                    let width = if landing { 2.0_f32 } else { 1.0 };
-                    painter.rect_stroke(rect, theme::RADIUS, Stroke::new(width, edge), StrokeKind::Inside);
+                    let edge = if response.hovered() { theme::TEXT_DIM } else { theme::RAISED };
+                    painter.rect_stroke(rect, theme::RADIUS, Stroke::new(1.0_f32, edge), StrokeKind::Inside);
                 } else if let Some(block) = block {
                     let live = view.states.iter().find(|s| s.block == id);
                     let engaged = live.is_none_or(|s| s.engaged) && !lifted;
                     let color = Category::of(block.effect_type).color();
                     painter.rect_filled(rect, theme::RADIUS, if engaged { color } else { theme::muted(color) });
-                    let ink = if engaged { Color32::WHITE } else { theme::TEXT_DIM };
+                    let ink = if engaged { theme::text_on(color) } else { theme::TEXT_DIM };
                     // Shrink the lettering until the longest word fits, so that
                     // a name only ever breaks between words.
                     let room = tile_size.x - 8.0 * scale;
@@ -1030,7 +1122,7 @@ impl Shell {
                             Align2::CENTER_CENTER,
                             "Y",
                             FontId::proportional(9.0 * scale),
-                            theme::ACCENT,
+                            if engaged { ink } else { theme::ACCENT },
                         );
                     }
                     if state.selected_block == Some(id) {
@@ -1054,25 +1146,63 @@ impl Shell {
                     let hot = response.hovered() || lifted;
                     painter.rect_filled(bar, 4.0_f32, if hot { theme::TEXT_DIM } else { theme::EDGE });
                 }
-                if response.clicked() && block.is_some() && pending.is_none() {
-                    actions.push(("block.select", json!({ "block": id })));
+                if picked {
+                    // Selected to be moved: a shunt gets a frame around its bar.
+                    let frame = if block.is_some() { rect } else { rect.shrink2(vec2(0.0, tile_size.y * 0.22)) };
+                    painter.rect_filled(frame, theme::RADIUS, theme::ACCENT.gamma_multiply(0.16));
+                    painter.rect_stroke(frame, theme::RADIUS, Stroke::new(2.0_f32, theme::ACCENT), StrokeKind::Outside);
+                }
+                if response.clicked() && pending.is_none() {
+                    let cell = (column, row);
+                    if id == blocks::EMPTY {
+                        selection = Selection::default();
+                    } else if ctrl {
+                        selection.toggle(cell);
+                    } else if shift {
+                        selection.extend_to(cell, occupied);
+                    } else {
+                        selection = Selection::only(cell);
+                    }
+                    // A plain click opens the block's editor. While more are
+                    // being picked, an editor that is open follows the block
+                    // picked last, but none opens: it would shift the grid.
+                    let follows =
+                        selection.contains(cell) && state.selected_block.is_some() && state.selected_block != Some(id);
+                    if block.is_some() && (!(ctrl || shift) || follows) {
+                        actions.push(("block.select", json!({ "block": id })));
+                    }
                 }
                 if response.drag_started() {
-                    (dragging, pending) = (Some((column, row)), None);
+                    pending = None;
+                    if id == blocks::EMPTY {
+                        band = ui.input(|i| i.pointer.press_origin());
+                    } else {
+                        // What is dragged is the selection; a block outside it becomes it.
+                        if !picked && ctrl {
+                            selection.toggle((column, row));
+                        } else if !picked {
+                            selection = Selection::only((column, row));
+                        }
+                        dragging = Some((column, row));
+                    }
                 }
-                if response.drag_stopped() {
-                    let target = pointer.and_then(cell_under).filter(|&cell| cell != (column, row));
-                    if let Some((to_column, to_row)) =
-                        target.filter(|&(c, r)| view.grid.cell(c, r).block == blocks::EMPTY)
-                    {
-                        let cells = json!({ "column": column, "row": row, "to_column": to_column, "to_row": to_row });
-                        actions.push(("grid.move_block", cells));
+                if response.drag_stopped() && dragging == Some((column, row)) {
+                    let (dx, dy) = pointer.map(|p| selection::offset((column, row), cell_near(p))).unwrap_or_default();
+                    if !moving && selection.can_move(dx, dy, occupied) {
+                        if let Some(action) = selection.move_action(dx, dy) {
+                            actions.push(action);
+                            moving = true;
+                        }
                     }
                     dragging = None;
                 }
                 let hint = match id {
-                    blocks::EMPTY => "Right-click to insert".to_owned(),
-                    id => format!("{}: click to edit, drag to move", blocks::label(id)),
+                    blocks::EMPTY => "Right-click to insert, drag to select".to_owned(),
+                    id => format!(
+                        "{}: click to edit, drag to move.\nCtrl+click or Shift+click selects more; \
+                         Alt+arrow keys move what is selected",
+                        blocks::label(id)
+                    ),
                 };
                 if dragging.is_none() {
                     response.on_hover_text(hint).context_menu(|ui| self.cell_menu(ui, column, row, actions));
@@ -1097,8 +1227,8 @@ impl Shell {
                     let lit = pending == Some(end) || touch.hovered();
                     painter.circle_filled(centre, HANDLE * scale, if lit { theme::ACCENT } else { theme::PANEL });
                     painter.circle_stroke(centre, HANDLE * scale, Stroke::new(1.5_f32, theme::ACCENT));
-                    let ink = if lit { theme::ON_ACCENT } else { theme::ACCENT };
-                    painter.text(centre, Align2::CENTER_CENTER, letter, FontId::proportional(10.0 * scale), ink);
+                    let ink = if lit { theme::text_on(theme::ACCENT) } else { theme::ACCENT };
+                    centred_text(&painter, centre, letter, FontId::proportional(10.0 * scale), ink);
                     let touch = touch.on_hover_text(if completes {
                         "Click to add or remove this cable"
                     } else if output {
@@ -1127,20 +1257,59 @@ impl Shell {
             let (a, b) = if end.2 { (handle(end), pointer) } else { (pointer, handle(end)) };
             painter.add(curve(a, b, Stroke::new(2.0 * scale, theme::ACCENT)));
         }
-        // The block being moved follows the pointer.
-        if let (Some((column, row)), Some(pointer)) = (dragging, pointer) {
-            let ghost = Rect::from_center_size(pointer, tile_size);
-            let name = blocks::label(view.grid.cell(column, row).block);
+        // The blocks being moved show where they would land: in the accent
+        // colour where all of them fit, in red where one of them does not.
+        let shift_by = dragging.zip(pointer).map(|(from, pointer)| selection::offset(from, cell_near(pointer)));
+        if let Some((dx, dy)) = shift_by.filter(|&by| by != (0, 0)) {
+            let edge = if selection.can_move(dx, dy, occupied) { theme::ACCENT } else { theme::DANGER };
             let top = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, ui.id().with("ghost")));
-            top.rect_filled(ghost, theme::RADIUS, theme::RAISED_HOT);
-            top.rect_stroke(ghost, theme::RADIUS, Stroke::new(2.0_f32, theme::ACCENT), StrokeKind::Outside);
-            top.text(ghost.center(), Align2::CENTER_CENTER, name, FontId::proportional(11.0 * scale), theme::TEXT);
+            for (column, row) in selection.cells() {
+                let Some((to_column, to_row)) = selection::shifted((column, row), dx, dy) else { continue };
+                let ghost = tile(to_column, to_row);
+                let name = blocks::label(view.grid.cell(column, row).block);
+                top.rect_filled(ghost, theme::RADIUS, theme::RAISED_HOT.gamma_multiply(0.92));
+                top.rect_stroke(ghost, theme::RADIUS, Stroke::new(2.0_f32, edge), StrokeKind::Outside);
+                top.text(ghost.center(), Align2::CENTER_CENTER, name, FontId::proportional(10.0 * scale), theme::TEXT);
+            }
         }
-        GridGesture { cable: pending, dragging }
+        // A rubber band selects what it touches.
+        if let (Some(start), Some(pointer)) = (band, pointer) {
+            let pulled = Rect::from_two_pos(start, pointer);
+            let cells = (0..grid::COLUMNS).flat_map(|column| (0..grid::ROWS).map(move |row| (column, row)));
+            selection = Selection::of(cells.filter(|&cell| occupied(cell) && tile(cell.0, cell.1).intersects(pulled)));
+            painter.rect_filled(pulled, 2.0_f32, theme::ACCENT.gamma_multiply(0.10));
+            painter.rect_stroke(pulled, 2.0_f32, Stroke::new(1.0_f32, theme::ACCENT), StrokeKind::Inside);
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            (dragging, band) = (None, None);
+        }
+        // Alt and an arrow key move the selection one cell.
+        let idle = dragging.is_none() && !moving && !ui.ctx().egui_wants_keyboard_input();
+        if idle && !selection.is_empty() {
+            let arrows =
+                [(Key::ArrowLeft, -1, 0), (Key::ArrowRight, 1, 0), (Key::ArrowUp, 0, -1), (Key::ArrowDown, 0, 1)];
+            for (key, dx, dy) in arrows {
+                let pressed = ui.input_mut(|i| i.consume_key(Modifiers::ALT, key));
+                if pressed && !moving && selection.can_move(dx, dy, occupied) {
+                    if let Some(action) = selection.move_action(dx, dy) {
+                        actions.push(action);
+                        moving = true;
+                    }
+                }
+            }
+        }
+        GridGesture { cable: pending, dragging, selection, band, moving }
     }
 
     /// One control cell of the block editor.
-    fn control(ui: &mut egui::Ui, block: u16, cell: Vec2, control: &ControlView, actions: &mut Vec<Action>) {
+    fn control(
+        ui: &mut egui::Ui,
+        block: u16,
+        cell: Vec2,
+        control: &ControlView,
+        picker: &mut Option<picker::Picker>,
+        actions: &mut Vec<Action>,
+    ) {
         let set = |value: u32| ("param.set", json!({ "block": block, "param": control.id, "value": value }));
         // A knob or a fader is either moved to a raw value or given a typed one.
         let modifier = || ("modifier.open", json!({ "block": block, "param": control.id }));
@@ -1206,6 +1375,16 @@ impl Shell {
                         let on = control.raw != 0;
                         if lit_button(ui, if on { "ON" } else { "OFF" }, on, theme::LAMP_ON).clicked() {
                             actions.push(("looper.press", json!({ "button": control.name })));
+                        }
+                    }
+                    // A long list, or the unit's cabs, is browsed in a window of its own.
+                    (_, choices) if picker::wanted(choices.as_ref().map(Vec::len), control.cabs) => {
+                        let listed = choices.as_ref().and_then(|choices| choices.get(control.raw as usize));
+                        let current = listed.map_or(control.text.as_str(), String::as_str);
+                        let name = RichText::new(shorten(current, body.width() - 10.0)).size(11.0);
+                        let hint = format!("{current}\nClick to browse the list");
+                        if picker::button(ui, name, body.width()).on_hover_text(hint).clicked() {
+                            *picker = Some(picker::Picker::new(block, control.id, &control.label));
                         }
                     }
                     (_, Some(choices)) => {
@@ -1580,13 +1759,22 @@ impl Shell {
             let model = editor["model"].as_object().map(|_| ControlView::from_json(&editor["model"]));
             if let Some((param, choices)) = model.as_ref().and_then(|p| Some((p, p.choices.as_ref()?))) {
                 let current = choices.get(param.raw as usize).map_or(param.text.as_str(), String::as_str);
-                egui::ComboBox::from_id_salt("block-model").selected_text(current).width(240.0).show_ui(ui, |ui| {
-                    for (index, choice) in choices.iter().enumerate() {
-                        if ui.selectable_label(index == param.raw as usize, choice).clicked() {
-                            actions.push(("param.set", json!({ "block": block, "param": param.id, "value": index })));
-                        }
+                if picker::wanted(Some(choices.len()), param.cabs) {
+                    // Too many models for a drop-down: they are browsed in a window.
+                    let hint = "Click to browse the models";
+                    if picker::button(ui, RichText::new(current), 240.0).on_hover_text(hint).clicked() {
+                        self.picker = Some(picker::Picker::new(block, param.id, &param.label));
                     }
-                });
+                } else {
+                    egui::ComboBox::from_id_salt("block-model").selected_text(current).width(240.0).show_ui(ui, |ui| {
+                        for (index, choice) in choices.iter().enumerate() {
+                            if ui.selectable_label(index == param.raw as usize, choice).clicked() {
+                                actions
+                                    .push(("param.set", json!({ "block": block, "param": param.id, "value": index })));
+                            }
+                        }
+                    });
+                }
             }
             if !fixed {
                 ui.separator();
@@ -1642,7 +1830,7 @@ impl Shell {
         let mut draw = |ui: &mut egui::Ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             ui.horizontal_top(|ui| {
-                let column = |ui: &mut egui::Ui, mixer: bool, actions: &mut Vec<Action>| {
+                let mut column = |ui: &mut egui::Ui, mixer: bool, actions: &mut Vec<Action>| {
                     ui.vertical(|ui| {
                         for row in all_rows.iter().filter(|row| (row["mixer"] == true) == mixer) {
                             ui.horizontal(|ui| {
@@ -1652,7 +1840,7 @@ impl Shell {
                                     if let Some(asked) = unconfirmed.get(&format!("{block}/{}", control.id)) {
                                         control.raw = *asked as u32;
                                     }
-                                    Self::control(ui, block, cell, &control, actions);
+                                    Self::control(ui, block, cell, &control, &mut self.picker, actions);
                                 }
                             });
                         }
@@ -1753,8 +1941,7 @@ impl Shell {
                     if ui.button("Cancel").clicked() {
                         decision = Some(false);
                     }
-                    let go =
-                        egui::Button::new(RichText::new(go_ahead).color(Color32::WHITE).strong()).fill(theme::DANGER);
+                    let go = filled_button(go_ahead, theme::DANGER);
                     if ui.add(go).clicked() {
                         decision = Some(true);
                     }
@@ -1831,6 +2018,8 @@ impl Shell {
                 self.cab_manager(ctx, &mut actions);
             }
         }
+        // Closes by itself when the block it belongs to is no longer edited.
+        self.picker_window(ctx, &mut actions);
         for (id, params) in actions {
             if CONFIRMED.contains(&id) {
                 self.confirm = Some((id, params));
@@ -1886,6 +2075,15 @@ mod tests {
         // Anything else is sent as often as it is asked for.
         assert_eq!(value_key("param.set_displayed", &drive), None);
         assert_eq!(value_key("grid.connect", &json!({ "column": 1, "row": 0, "from_row": 0 })), None);
+    }
+
+    #[test]
+    fn a_name_is_cut_only_when_it_is_wider_than_its_room() {
+        assert_eq!(fitted("Plexi Lead", 100.0, 100.0), "Plexi Lead");
+        // Ten letters of ten points in room for six: five and an ellipsis.
+        assert_eq!(fitted("Plexi Lead", 100.0, 60.0), "Plexi…");
+        assert_eq!(fitted("", 0.0, 0.0), "");
+        assert_eq!(fitted("Plexi Lead", 100.0, 0.0).chars().count(), 4);
     }
 
     #[test]

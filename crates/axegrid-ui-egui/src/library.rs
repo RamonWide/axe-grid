@@ -3,8 +3,9 @@
 //! the rest of the shell they act only by running commands.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-use axegrid_engine::CommandError;
+use axegrid_engine::{CommandError, NameScan};
 use axegrid_model::{blocks, library};
 use egui::{vec2, Align, Key, Layout, RichText};
 use serde_json::{json, Value};
@@ -13,6 +14,8 @@ use crate::{theme, Action, Shell};
 
 /// Names asked for at a time, so that an edit made meanwhile does not wait long.
 const NAMES_PER_TURN: u16 = 8;
+/// How long the reading of names rests after the unit failed to answer.
+const SCAN_RETRY: Duration = Duration::from_secs(5);
 const ROW_HEIGHT: f32 = 20.0;
 const LIST_SIZE: egui::Vec2 = vec2(430.0, 380.0);
 /// Extension of preset and cabinet files.
@@ -40,11 +43,8 @@ pub(crate) struct LibraryView {
     cab_filter: String,
     preset_pick: Option<u16>,
     cab_pick: Option<u16>,
-    /// Next slot whose name is still to be read, and whether reading is over.
-    preset_cursor: u16,
-    presets_read: bool,
-    cab_cursor: u16,
-    cabs_read: bool,
+    /// When the reading of names may go on, after the unit failed to answer.
+    scan_retry_at: Option<Instant>,
     hide_empty: bool,
     /// Text of the "copy to slot" box.
     copy_to: String,
@@ -63,8 +63,26 @@ impl LibraryView {
     }
 
     /// Whether names are being read or presets written in the background.
-    pub fn busy(&self) -> bool {
-        self.backup.is_some() || (self.presets_open && !self.presets_read) || (self.cabs_open && !self.cabs_read)
+    /// The names are read by the engine (`library.scan`), which knows how
+    /// far it has come: `scan`.
+    pub fn busy(&self, scan: &NameScan) -> bool {
+        self.backup.is_some() || (self.scan_wanted(scan) && self.scan_retry_at.is_none())
+    }
+
+    /// Whether there are names still to be read from the unit that is connected.
+    fn scan_wanted(&self, scan: &NameScan) -> bool {
+        scan.total() > 0 && !scan.verified()
+    }
+}
+
+/// What a manager says beside its filter while its names are not certain
+/// yet: `checked` of `slots` have been read from the unit.
+fn scan_note(from_cache: bool, checked: u16, slots: u16) -> String {
+    if from_cache {
+        // The list is complete already, from last time; this only confirms it.
+        format!("saved names, checking {checked} of {slots}")
+    } else {
+        format!("reading names {checked} of {slots}")
     }
 }
 
@@ -93,11 +111,15 @@ impl Shell {
             return;
         }
         let mut wanted: Vec<Action> = Vec::new();
-        if self.library.presets_open && !self.library.presets_read {
-            wanted.push(("preset.names", json!({ "first": self.library.preset_cursor, "count": NAMES_PER_TURN })));
+        if self.library.scan_retry_at.is_some_and(|at| Instant::now() >= at) {
+            self.library.scan_retry_at = None;
         }
-        if self.library.cabs_open && !self.library.cabs_read {
-            wanted.push(("cab.names", json!({ "first": self.library.cab_cursor.max(1), "count": NAMES_PER_TURN })));
+        // Whether a window is open or not: the names are checked once after
+        // connecting, so that they are right by the time they are looked at.
+        if self.library.scan_wanted(&self.view.state.name_scan) && self.library.scan_retry_at.is_none() {
+            // The list that is being looked at goes first.
+            let first = if self.library.cabs_open && !self.library.presets_open { "cabs" } else { "presets" };
+            wanted.push(("library.scan", json!({ "budget": NAMES_PER_TURN, "first": first })));
         }
         if let Some(backup) = &self.library.backup {
             let params = json!({ "folder": backup.folder.display().to_string(), "first": backup.next, "count": 1 });
@@ -117,21 +139,11 @@ impl Shell {
         self.library.waiting = false;
         let Some(model) = self.view.state.model else { return };
         let asked = |key: &str| params[key].as_u64().unwrap_or_default() as u16;
-        let (first, count) = (asked("first"), asked("count"));
+        let first = asked("first");
         let slots = library::preset_count(model);
         match id {
-            // An answer to a question that "Read again" has since overtaken is dropped.
-            "preset.names" if first == self.library.preset_cursor => {
-                let got = outcome.as_ref().ok().and_then(|r| r["names"].as_array().map(Vec::len)).unwrap_or(0);
-                self.library.preset_cursor = first + count;
-                // Fewer names than asked for, a refusal or an error ends the list.
-                self.library.presets_read = got < usize::from(count) || self.library.preset_cursor >= slots;
-            }
-            "cab.names" if first == self.library.cab_cursor.max(1) => {
-                let user_cabs = library::cab_slots(model).map_or(0, |slots| slots.user);
-                self.library.cab_cursor = first + count;
-                self.library.cabs_read = outcome.is_err() || self.library.cab_cursor > user_cabs;
-            }
+            // The engine keeps the place; a unit that did not answer is left alone for a while.
+            "library.scan" if outcome.is_err() => self.library.scan_retry_at = Some(Instant::now() + SCAN_RETRY),
             "preset.export_range" => {
                 let Some(backup) = self.library.backup.as_mut().filter(|backup| backup.next == first) else { return };
                 match outcome {
@@ -165,12 +177,14 @@ impl Shell {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Find").small().color(theme::TEXT_DIM));
                 ui.add(egui::TextEdit::singleline(&mut self.library.preset_filter).desired_width(180.0));
-                let known = state.preset_names.len();
-                if !self.library.presets_read {
+                let scan = &state.name_scan;
+                if !scan.presets_done() {
                     ui.spinner();
-                    ui.label(RichText::new(format!("reading names {known} of {slots}")).small().color(theme::TEXT_DIM));
+                    let note = scan_note(scan.from_cache, scan.presets_checked, scan.preset_slots);
+                    ui.label(RichText::new(note).small().color(theme::TEXT_DIM))
+                        .on_hover_text("The names are read from the unit in the background, between your edits.");
                 } else if ui.small_button("Read again").on_hover_text("Read every name from the unit again").clicked() {
-                    (self.library.preset_cursor, self.library.presets_read) = (0, false);
+                    actions.push(("library.rescan", json!({ "budget": 0, "first": "presets" })));
                 }
             });
             ui.add_space(4.0);
@@ -191,12 +205,19 @@ impl Shell {
                         let empty = name.is_empty() || name == EMPTY_PRESET;
                         let shown_name = if empty { "(empty)" } else { name };
                         let mut text = RichText::new(format!("{number:03}   {shown_name}")).monospace();
+                        let picked = self.library.preset_pick == Some(number);
                         if number == current {
-                            text = text.color(theme::ACCENT).strong();
+                            text = text.strong();
+                        }
+                        // A picked row is filled with the accent, so its text takes the colour for that.
+                        if picked {
+                            text = text.color(theme::text_on(theme::ACCENT));
+                        } else if number == current {
+                            text = text.color(theme::ACCENT);
                         } else if empty {
                             text = text.color(theme::TEXT_DIM);
                         }
-                        let row = ui.selectable_label(self.library.preset_pick == Some(number), text);
+                        let row = ui.selectable_label(picked, text);
                         if row.clicked() {
                             self.library.preset_pick = Some(number);
                         }
@@ -300,13 +321,15 @@ impl Shell {
                 ui.label(RichText::new("Find").small().color(theme::TEXT_DIM));
                 ui.add(egui::TextEdit::singleline(&mut self.library.cab_filter).desired_width(160.0));
                 ui.checkbox(&mut self.library.hide_empty, "Hide empty");
-                let known = state.cab_names.len();
-                if !self.library.cabs_read {
+                let scan = &state.name_scan;
+                if !scan.cabs_done() {
                     ui.spinner();
-                    let progress = format!("reading names {known} of {}", slots.user);
-                    ui.label(RichText::new(progress).small().color(theme::TEXT_DIM));
-                } else if ui.small_button("Read again").clicked() {
-                    (self.library.cab_cursor, self.library.cabs_read) = (1, false);
+                    // The factory cabs come first in the unit's list and are checked with the rest.
+                    let note = scan_note(scan.from_cache, scan.cabs_checked, scan.cab_slots);
+                    ui.label(RichText::new(note).small().color(theme::TEXT_DIM))
+                        .on_hover_text("The names are read from the unit in the background, between your edits.");
+                } else if ui.small_button("Read again").on_hover_text("Read every name from the unit again").clicked() {
+                    actions.push(("library.rescan", json!({ "budget": 0, "first": "cabs" })));
                 }
             });
             ui.add_space(4.0);
@@ -328,10 +351,14 @@ impl Shell {
                         let empty = name == EMPTY_CAB;
                         let mut text =
                             RichText::new(format!("{cab:4}   {}", if empty { "(empty)" } else { name })).monospace();
-                        if empty {
+                        let picked = self.library.cab_pick == Some(cab);
+                        // A picked row is filled with the accent, so its text takes the colour for that.
+                        if picked {
+                            text = text.color(theme::text_on(theme::ACCENT));
+                        } else if empty {
                             text = text.color(theme::TEXT_DIM);
                         }
-                        if ui.selectable_label(self.library.cab_pick == Some(cab), text).clicked() {
+                        if ui.selectable_label(picked, text).clicked() {
                             self.library.cab_pick = Some(cab);
                         }
                     }
@@ -450,10 +477,35 @@ mod tests {
 
     #[test]
     fn a_reset_keeps_the_windows_open() {
-        let mut view =
-            LibraryView { presets_open: true, preset_cursor: 40, presets_read: true, ..LibraryView::default() };
+        let mut view = LibraryView {
+            presets_open: true,
+            preset_pick: Some(40),
+            scan_retry_at: Some(Instant::now()),
+            ..LibraryView::default()
+        };
         view.reset();
-        assert!(view.presets_open && !view.presets_read && view.preset_cursor == 0);
-        assert!(view.busy());
+        assert!(view.presets_open && view.preset_pick.is_none() && view.scan_retry_at.is_none());
+    }
+
+    #[test]
+    fn names_are_read_in_the_background_until_they_are_verified() {
+        let mut view = LibraryView::default();
+        // No unit, nothing to read.
+        assert!(!view.busy(&NameScan::default()));
+        let mut scan = NameScan { from_cache: true, preset_slots: 768, cab_slots: 1213, ..NameScan::default() };
+        // Even with every window closed, and with names from last time on show.
+        assert!(view.busy(&scan));
+        // A unit that did not answer is given a rest.
+        view.scan_retry_at = Some(Instant::now() + SCAN_RETRY);
+        assert!(!view.busy(&scan));
+        view.scan_retry_at = None;
+        (scan.presets_checked, scan.cabs_checked) = (768, 1213);
+        assert!(!view.busy(&scan));
+    }
+
+    #[test]
+    fn the_note_tells_saved_names_from_a_first_read() {
+        assert_eq!(scan_note(true, 120, 768), "saved names, checking 120 of 768");
+        assert_eq!(scan_note(false, 16, 768), "reading names 16 of 768");
     }
 }

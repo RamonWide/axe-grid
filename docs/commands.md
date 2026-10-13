@@ -3,7 +3,7 @@
 Generated from the registry by `scripts/gen-command-docs.py`. Do not edit by hand;
 regenerate after adding or changing a command (see `CONTRIBUTING.md`).
 
-83 commands.
+86 commands.
 
 ## device
 
@@ -272,6 +272,26 @@ Write a cabinet .syx file into a user cab slot on the device, overwriting what i
 | `cab` | integer | yes | User cab number to overwrite, counted from 1 |
 | `path` | string | yes | Cabinet file to send |
 
+## library
+
+### `library.scan`
+
+Go on checking the names of stored presets and cabs against the device, from where the last call stopped, and correct the ones that differ. The names shown right after connecting are the ones kept on this computer from last time; this is what makes them certain. "phase" in the result is "cached" or "reading" until every slot has been read, then "verified"; a call after that reads nothing. Only reads, and only slots the model has.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `budget` | integer | no | Most names to read in this call, one request each; 0 reads none. Without it everything that is left is read |
+| `first` | string | no | Which list to go on with first: "presets" (default) or "cabs" |
+
+### `library.rescan`
+
+Start the check of preset and cab names over from the first slot, for when presets or cabs were changed on the device itself or by another program. The names stay on show meanwhile. With a budget the rest is left to library.scan. Only reads.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `budget` | integer | no | Most names to read in this call, one request each; 0 reads none. Without it everything that is left is read |
+| `first` | string | no | Which list to go on with first: "presets" (default) or "cabs" |
+
 ## edit
 
 ### `edit.undo`
@@ -446,6 +466,16 @@ Move a block or shunt to an empty cell. Within a column its cables move with it;
 | `row` | integer | yes | 0 to 3, top to bottom |
 | `to_column` | integer | yes | Destination column, 0 to 11 |
 | `to_row` | integer | yes | Destination row, 0 to 3 |
+
+### `grid.move_blocks`
+
+Move several blocks and shunts together by the same number of columns and rows, as one edit that undoes in one step. All of them move or none does: it is refused if any would leave the grid or land on a block that is not itself being moved. Cables between the moved blocks go with them. A cable to a block that stays is kept when the move is only up or down, and dropped when the blocks change column, because a cable only joins neighbouring columns. Changes the grid of the edit buffer on the device; nothing is stored.
+
+| Parameter | Type | Required | Meaning |
+|---|---|---|---|
+| `cells` | array | yes | The cells to move, each as {"column": 0 to 11, "row": 0 to 3} |
+| `dx` | integer | no | Columns to the right, -11 to 11; negative is left. Defaults to 0 |
+| `dy` | integer | no | Rows down, -3 to 3; negative is up. Defaults to 0 |
 
 ### `grid.connect_to_input`
 

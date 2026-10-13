@@ -59,9 +59,9 @@ Still unverified on hardware:
 | Library on a Mark I/II or an XL+ | Wrong slot counts; cab numbers laid out differently | `library.rs`, `transfer.rs` |
 | Tuner note numbering (0 = A) and centre (63) | Wrong note name or needle | `Engine::tuner_json` |
 | Tuner and CC 15 when the owner remapped the tuner controller | Another function is triggered | `live_cmds.rs` |
-| `07` with set = 1 on anything but Amp 1's drive, where every source up to 23 and every field were set: other parameters, other blocks | A field is set wrongly, or the unit stops answering as it did for a query past the last field (below) | `modifier_cmds.rs` |
-| Modifier sources past 23, if there are any, and the answer for a parameter that takes no modifier | A source the unit has cannot be chosen, or an error that says little | `modifier_cmds.rs` |
-| Undoing a removed modifier as one step (the source, then each field) | Each message is confirmed, the sequence has only run against the simulator | `modifier_cmds.rs` |
+| Which knobs and faders can take a modifier: a unit answers a read for every parameter, and setting a source on one that cannot has not been sent | A modifier window opens on a control the unit will not modulate | `modifier_cmds.rs` |
+| The length of the modifier source list on firmware before 32.00 | Sources past 23 cannot be chosen there, or 23 is already too many on very old firmware | `modifier_cmds.rs` |
+| How many modifiers a preset holds, and the answer when they run out | An error that says little | `modifier_cmds.rs` |
 | `23` position byte | The looper's bar shows the wrong place | `Reply::LooperStatus` |
 | Ending a Tone Match capture and `EQMATCH_MATCH` | The steps do not do what they say | `live_cmds.rs` |
 | `scene.paste`, `block.paste`, `block.copy_x_to_y` on a unit | Built from messages that are each confirmed, but the sequences have only run against the simulator | `scene_cmds.rs`, `block_cmds.rs` |
@@ -170,12 +170,15 @@ Partly there:
 
 - **Modifiers**: right-click a knob or a fader to open its modifier; step
   the source to attach or remove it, turn the thirteen fields, and see a
-  curve. Reading the fields, attaching each of the 23 sources, setting every
-  field and removing the modifier are confirmed on a unit, on one parameter.
+  curve. Reading the fields, attaching each of the 27 sources, setting every
+  field, removing the modifier and undoing and redoing the removal are
+  confirmed on a unit with firmware 32.00, on four parameters of four blocks.
   Removing a modifier makes the device reset its other fields, and it keeps
   no field while there is no source: so the fields can be turned only once a
   source is chosen, and undoing a removal sets the source and then each
-  field again. No source past 23 is offered; the unit may have more. The curve is this
+  field again. On older firmware no source past 23 is offered. Lists and
+  switches are refused by the editor; the unit itself does not say which
+  parameters take a modifier. The curve is this
   project's own sketch from start, middle, end, slope, scale and offset; the
   device's formula is not known, and damping is not drawn.
 - **Scenes**: names, copy and paste. The device stores no scene names, so

@@ -234,7 +234,7 @@ fn a_modifier_is_attached_edited_and_removed() {
     assert!(matches!(err, CommandError::BadParam { name: "source", .. }));
     assert!(engine.run("modifier.attach", &json!({ "source": 0 })).is_err());
     // No choice is sent past the last one the family is documented to have.
-    let past = engine.run("modifier.attach", &json!({ "source": 24 })).unwrap_err();
+    let past = engine.run("modifier.attach", &json!({ "source": 28 })).unwrap_err();
     assert!(matches!(past, CommandError::BadParam { name: "source", .. }), "{past}");
     let past = engine.run("modifier.set", &json!({ "field": "pc_reset", "value": 2 })).unwrap_err();
     assert!(matches!(past, CommandError::BadParam { name: "value", .. }), "{past}");
@@ -275,9 +275,9 @@ fn a_modifier_is_attached_edited_and_removed() {
 #[test]
 fn a_modifier_needs_a_parameter_that_can_have_one() {
     let mut engine = connected();
-    // The amp's type is a list: the device refuses.
+    // The amp's type is a list: nothing is asked of the device.
     let err = engine.run("modifier.open", &json!({ "block": AMP, "param": "DISTORT_TYPE" })).unwrap_err();
-    assert_eq!(err.kind(), "device");
+    assert_eq!(err.kind(), "bad_param");
     assert!(engine.run("modifier.open", &json!({ "block": AMP })).is_err());
     // Loading another preset closes the window.
     engine.run("modifier.open", &json!({ "block": AMP, "param": DRIVE })).unwrap();

@@ -363,6 +363,21 @@ to each of 1 to 23 in turn:
 | 7 | `SEQNCR` | 15 | `EXTRN 6` | 23 | `MANUAL B` |
 | 8 | `ENVLPE` | 16 | `EXTRN 7` | | |
 
+[H] Values 24 to 27 followed, on the same unit: `MANUAL C`, `MANUAL D`,
+`SCENE 1`, `SCENE 2`. [B] The original editor's newest source list has
+these 28 names counting none and no more, so 27 is taken as the last; 28 has
+not been sent. Its lists for older firmware are shorter, so the limit
+depends on the firmware. [?] Which firmware has which length.
+
+[H] The same messages on other parameters, with four modifiers in the preset
+at once: Wah 1 control, Delay 1 mix and Volume/Pan 1 volume each took source
+10 (`EXTRN 1`) and selector 4 = 40000 and kept them.
+
+[H] A parameter that is a list answers a read like any other: selector 0 of
+Amp 1's type read 0, `NONE`. So a read does not tell whether a parameter can
+take a modifier. [?] What a unit does when a source is set on such a
+parameter; it has not been sent.
+
 [H] With a source attached every other field took a value once and kept it
 on reading back: selector 1 = 10000 (`1.53`), 2 = 50000 (`7.63`), 3 = 5000
 (`7.6 %`), 5 = 60000 (`91.6 %`), 6 = 20000 (`30.5 %`), 7 = 2000 (`31 ms`),
@@ -378,18 +393,15 @@ selector 0 was 0 was answered with 40000 and `61.0 %`, and read back as 32767
 straight afterwards. To bring back a removed modifier, set the source first
 and the fields after it.
 
-[?] Whether there are sources past 23 (the last two read `MANUAL`, where the
-owner's manual ends on two scene controllers, so the list on this firmware
-may be longer; none past 23 has been sent), what the device answers for a
-parameter that cannot take a modifier, and how many modifiers a preset may
-hold (status `NO_MODIFIERS_LEFT` exists).
+[?] How many modifiers a preset may hold (status `NO_MODIFIERS_LEFT` exists).
 
 [P] The owner's manual lists 23 sources besides none (four LFO outputs, two
 ADSRs, the sequencer, the envelope follower, the pitch detector, twelve
 external controllers and two scene controllers), seven auto-engage settings
-and two for the reset on preset change. Until a unit has shown what it does
-with a choice past the last, an editor should send selector 0 no higher than
-23, selector 10 no higher than 6 and selector 11 no higher than 1.
+and two for the reset on preset change. No unit has shown what it does with
+a choice past the last, so an editor should send selector 0 no higher than
+27 on firmware 32.00 and later and no higher than 23 before it, selector 10
+no higher than 6 and selector 11 no higher than 1.
 
 [?] How the device shapes the controller with start, middle, end, slope,
 scale and offset is not published. The editor's curve is its own sketch: a

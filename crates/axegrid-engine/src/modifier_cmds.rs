@@ -9,7 +9,7 @@ use axegrid_device::SessionError;
 use axegrid_model::curves;
 use axegrid_model::defs::RAW_MAX;
 use axegrid_model::eq::leading_number;
-use axegrid_model::{blocks, params};
+use axegrid_model::{blocks, layouts, params};
 use axegrid_sysex::{function, ModifierValue, ParamAddress};
 use serde_json::{json, Value};
 
@@ -62,13 +62,18 @@ pub(crate) struct Open {
 /// field and value, collected as they are seen.
 pub(crate) type Seen = BTreeMap<(u16, u16), String>;
 
+/// The firmware whose source list a unit has shown to run to 27.
+const FULL_SOURCES_FROM: u8 = 32;
+
 /// The highest value this build sends for a field. A choice is never
-/// stepped past the last one public documentation lists for the family
-/// (24 sources counting none, seven auto-engage modes, off and on): a unit
-/// asked for a modifier field that does not exist stopped answering, and
-/// nothing says a choice that does not exist would be taken any better.
-fn highest(selector: u16) -> u16 {
+/// stepped past the last one known to exist: a unit asked for a modifier
+/// field that does not exist stopped answering, and nothing says a choice
+/// that does not exist would be taken any better. A unit on firmware 32.00
+/// took sources up to 27 (the last being the second scene controller);
+/// for older firmware the 23 that public documentation lists are the limit.
+fn highest(selector: u16, firmware: Option<(u8, u8)>) -> u16 {
     match selector {
+        SOURCE if firmware.is_some_and(|(major, _)| major >= FULL_SOURCES_FROM) => 27,
         SOURCE => 23,
         10 => 6,
         11 => 1,
@@ -194,10 +199,11 @@ impl Engine {
             Some(field) => field.value,
             None => self.session()?.modifier(address, selector)?.value,
         };
-        if raw > highest(selector) {
+        let highest = highest(selector, self.state.firmware);
+        if raw > highest {
             return Err(CommandError::BadParam {
                 name: "value",
-                problem: format!("{raw} is past {}, the highest this field is sent", highest(selector)),
+                problem: format!("{raw} is past {highest}, the highest this field is sent"),
             });
         }
         // Without a source the device answers with the value asked for and
@@ -237,7 +243,7 @@ impl Engine {
             .filter_map(|&(selector, key, label, kind)| {
                 let field = open.field(selector)?;
                 Some(json!({ "field": selector, "key": key, "label": label, "value": field.value, "text": field.text,
-                             "kind": if kind == Kind::Step { "step" } else { "knob" }, "max": highest(selector) }))
+                             "kind": if kind == Kind::Step { "step" } else { "knob" }, "max": highest(selector, self.state.firmware) }))
             })
             .collect();
         json!({
@@ -273,7 +279,13 @@ fn target(engine: &Engine, args: &Args<'_>) -> Result<ParamAddress, CommandError
         }
     }
     let block = engine.block_arg(args)?;
-    Ok(ParamAddress { block, param: engine.param_arg(args, block)? })
+    let param = engine.param_arg(args, block)?;
+    // A unit answers for a list or a switch as for any parameter, so the
+    // editor is the one to say that they take no modifier.
+    if blocks::by_id(block).is_some_and(|b| layouts::is_stepped(b.effect_type, param)) {
+        return Err(CommandError::BadParam { name: "param", problem: "lists and switches take no modifier".into() });
+    }
+    Ok(ParamAddress { block, param })
 }
 
 fn open(engine: &mut Engine, args: &Args<'_>) -> Result<Value, CommandError> {
@@ -300,7 +312,7 @@ fn source_arg(engine: &Engine, args: &Args<'_>) -> Result<u16, CommandError> {
                 problem: format!("{name:?} is not a source the device has named yet; give its number"),
             })
         }
-        _ => Ok(args.int("source", u64::from(highest(SOURCE)))? as u16),
+        _ => Ok(args.int("source", u64::from(highest(SOURCE, engine.state.firmware)))? as u16),
     }
 }
 
@@ -367,8 +379,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         menu: "",
         shortcut: "",
         doc: "Read the modifier of a parameter: its source, range, curve points and the rest, each with \
-              the device's own text, and a sketch of the curve. Only reads. The device refuses for a \
-              parameter that cannot have a modifier.",
+              the device's own text, and a sketch of the curve. Only reads. Lists and switches take \
+              no modifier.",
         params: &[BLOCK, PARAM],
         enabled: connected,
         run: open,
@@ -455,7 +467,8 @@ mod tests {
         assert!(FIELDS.iter().all(|field| field.0 < MODIFIER_FIELDS));
         assert_eq!(field_by_key("offset"), Some(14));
         assert_eq!(field_by_key("end_marker"), None);
-        assert_eq!((highest(SOURCE), highest(11), highest(4)), (23, 1, RAW_MAX));
+        assert_eq!((highest(SOURCE, None), highest(11, None), highest(4, None)), (23, 1, RAW_MAX));
+        assert_eq!((highest(SOURCE, Some((32, 0))), highest(SOURCE, Some((31, 3)))), (27, 23));
     }
 
     #[test]

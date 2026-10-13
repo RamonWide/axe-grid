@@ -568,9 +568,9 @@ impl SimDevice {
             MODIFIER => {
                 let (block, param, field) = (r.u16(2)?, r.u16(2)?, r.u16(2)?);
                 let (value, set) = (r.u16(3)?, r.u8()?);
-                // Lists and switches take no modifier; a real unit must never be asked past the last field.
-                let stepped = blocks::by_id(block).is_some_and(|b| layouts::is_stepped(b.effect_type, param));
-                if !self.in_preset(block) || stepped || field >= MODIFIER_FIELDS {
+                // As a unit, it answers for lists and switches too. A real unit
+                // must never be asked past the last field.
+                if !self.in_preset(block) || field >= MODIFIER_FIELDS {
                     self.status(MODIFIER, STATUS_INVALID_BLOCK);
                     return Some(());
                 }

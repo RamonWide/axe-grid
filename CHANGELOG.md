@@ -28,8 +28,9 @@ listed under "Changed".
   Damping, Off Value, Scale and Offset, and see a curve of what the controller will do. Every
   field shows the unit's own text. Commands `modifier.open`, `modifier.close`,
   `modifier.attach`, `modifier.remove`, `modifier.set` and `modifier.sources`. Reading a
-  modifier, attaching each of 23 sources, setting every field and removing it are confirmed
-  on a unit, on one parameter; the curve is a sketch. The unit resets a modifier's other
+  modifier, attaching each of 27 sources, setting every field, removing it and undoing the
+  removal are confirmed on a unit with firmware 32.00, on four blocks; on older firmware
+  the sources stop at 23, and the curve is a sketch. The unit resets a modifier's other
   fields when it is removed, so a removal is one step to undo that brings the source and the
   fields back. It keeps no field while there is no source, so the fields can be turned only
   once a source is chosen.

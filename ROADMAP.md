@@ -69,7 +69,7 @@ no known way to hang the unit.
 | Block parameters | ~75% | M | Pages for 38 block types, all control kinds, X/Y, bypass, type lists read from the unit · a few special controls, lists kept between sessions |
 | Presets | ~70% | S | Select, rename, save, browser with all names, copy, save to another slot, export, import, backup of all · swap, bank and bundle files, exporting unsaved edits |
 | Scenes | ~70% | S | Select, per-scene output levels, names kept on the computer, copy and paste · swap, set all to X or Y; copy and paste not yet confirmed on a unit |
-| Modifiers and controllers | ~40% | M | The Controllers block's pages; a modifier window on every knob and fader: attach, edit, remove, a sketched curve · confirmation on a unit for more than one parameter, a list of sources, marks on modified controls, the unit's own curve |
+| Modifiers and controllers | ~40% | M | The Controllers block's pages; a modifier window on every knob and fader: attach, edit, remove, a sketched curve · knowing which parameters take one, a list of sources, marks on modified controls, the unit's own curve |
 | Graphs and meters | ~45% | M | Computed curves for 13 block types: EQs, filter, delay and reverb EQ, amp speaker, cab, crossover, compressor, gates, ADSR · all meters, Tone Match, LFO and sequencer displays, the unit's own graph data |
 | Utilities (tuner, tempo, looper, Tone Match) | ~75% | S | Tuner, tap and BPM, looper buttons with state and a position bar, the three Tone Match steps · the Tone Match display; position and matching not yet confirmed on a unit |
 | Block tools | ~50% | S | Copy and paste a block, one X/Y set or both, copy X to Y and Y to X · reset to defaults (how the unit does it is not known), block library, global blocks |
@@ -104,8 +104,8 @@ The aim is that a player can use Axe-Grid for an evening without reaching for th
 ### 0.3: modifiers and feedback
 
 - ~~Modifiers: attach, edit and remove, with the curve display.~~ Done against the simulator.
-  Reading a modifier, attaching each of 23 sources, setting every field and removing it are
-  confirmed on a unit, on one parameter. The curve is a sketch.
+  Reading a modifier, attaching each of 27 sources, setting every field, removing it and
+  undoing the removal are confirmed on a unit. The curve is a sketch.
 - Level and gain-reduction meters.
 - ~~Graphs for delay, reverb, filter, graphic EQ and the amp's speaker page.~~ Done, computed
   from the settings.

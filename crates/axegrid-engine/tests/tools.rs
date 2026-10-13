@@ -275,7 +275,7 @@ fn a_modifier_is_attached_edited_and_removed() {
 #[test]
 fn a_modifier_needs_a_parameter_that_can_have_one() {
     let mut engine = connected();
-    // The amp's type is a list: nothing is asked of the device.
+    // The amp's type takes no modifier: nothing is asked of the device.
     let err = engine.run("modifier.open", &json!({ "block": AMP, "param": "DISTORT_TYPE" })).unwrap_err();
     assert_eq!(err.kind(), "bad_param");
     assert!(engine.run("modifier.open", &json!({ "block": AMP })).is_err());

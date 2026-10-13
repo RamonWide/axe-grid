@@ -349,6 +349,9 @@ impl Engine {
         described["label"] = json!(label);
         described["kind"] = json!(kind);
         described["max"] = json!(if stepped_to > 0 { stepped_to } else { u32::from(RAW_MAX) });
+        let effect = blocks::by_id(value.address.block).map(|b| b.effect_type);
+        described["modifier"] =
+            json!(effect.is_some_and(|effect| layouts::modifier_param(effect, value.address.param).is_some()));
         described
     }
 

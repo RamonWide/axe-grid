@@ -102,7 +102,8 @@ A modifier belongs to a parameter and has thirteen fields the editor shows
 modifier, which `View::modifier` hands to the window; the other modifier
 commands act on the open one unless told otherwise. The device names a
 source only when a modifier uses it, so the engine collects the names it has
-seen. The selector is range-checked twice on the way out, in the request and
+seen. Which parameters take a modifier, and through which parameter it is
+addressed, comes from `layouts::modifier_param`; a unit does not say. The selector is range-checked twice on the way out, in the request and
 in the session, because a unit asked for a field past the last one stops
 answering (see [gaps](gaps.md)).
 

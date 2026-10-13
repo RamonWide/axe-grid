@@ -59,9 +59,8 @@ Still unverified on hardware:
 | Library on a Mark I/II or an XL+ | Wrong slot counts; cab numbers laid out differently | `library.rs`, `transfer.rs` |
 | Tuner note numbering (0 = A) and centre (63) | Wrong note name or needle | `Engine::tuner_json` |
 | Tuner and CC 15 when the owner remapped the tuner controller | Another function is triggered | `live_cmds.rs` |
-| Which knobs and faders can take a modifier: a unit answers a read for every parameter, and setting a source on one that cannot has not been sent | A modifier window opens on a control the unit will not modulate | `modifier_cmds.rs` |
+| The list of parameters that take a modifier, for firmware other than the one the list was made for | A modifier is offered on a control the unit will not modulate, or not offered where it would | `layouts.json` (`mod`) |
 | The length of the modifier source list on firmware before 32.00 | Sources past 23 cannot be chosen there, or 23 is already too many on very old firmware | `modifier_cmds.rs` |
-| How many modifiers a preset holds, and the answer when they run out | An error that says little | `modifier_cmds.rs` |
 | `23` position byte | The looper's bar shows the wrong place | `Reply::LooperStatus` |
 | Ending a Tone Match capture and `EQMATCH_MATCH` | The steps do not do what they say | `live_cmds.rs` |
 | `scene.paste`, `block.paste`, `block.copy_x_to_y` on a unit | Built from messages that are each confirmed, but the sequences have only run against the simulator | `scene_cmds.rs`, `block_cmds.rs` |
@@ -176,9 +175,14 @@ Partly there:
   Removing a modifier makes the device reset its other fields, and it keeps
   no field while there is no source: so the fields can be turned only once a
   source is chosen, and undoing a removal sets the source and then each
-  field again. On older firmware no source past 23 is offered. Lists and
-  switches are refused by the editor; the unit itself does not say which
-  parameters take a modifier. The curve is this
+  field again. On older firmware no source past 23 is offered. The unit
+  answers a modifier read for any parameter, so which controls take one
+  comes from a list of 296 parameters in the layout data: the editor offers
+  a modifier on those and refuses the rest. A bypass mode and an LFO type
+  keep theirs on a parameter of its own, which the editor follows. A preset
+  holds 24 modifiers; with 24 in use the unit refuses a 25th and refuses
+  even to read a parameter that has none, and the editor says so. A switch
+  or a list opens its modifier with a right click anywhere in its cell. The curve is this
   project's own sketch from start, middle, end, slope, scale and offset; the
   device's formula is not known, and damping is not drawn.
 - **Scenes**: names, copy and paste. The device stores no scene names, so

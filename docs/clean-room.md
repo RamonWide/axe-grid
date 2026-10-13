@@ -100,7 +100,8 @@ So that players need not relearn where things are, the control labels
 rows follow the original editor. The file was produced by converting the
 control-layout description embedded in the original program: for each
 control, the parameter it edits, its label, its kind (knob, list, switch,
-fader), its page and row, and the condition under which it shows. Pixel
+fader), its page and row, and the condition under which it shows; and, from
+the same description, the list of parameters that take a modifier. Pixel
 positions, skin references, graphics, tooltips and help text were not taken.
 The labels are short functional names, most of which also appear on the
 device's own screen and in its public manual. The file is replaceable: write

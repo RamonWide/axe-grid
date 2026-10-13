@@ -97,6 +97,10 @@ pub struct Layout {
     /// The parameter whose value chooses between variants, when there are several.
     pub select: Option<(u16, By)>,
     pub variants: Vec<Variant>,
+    /// The parameters that take a modifier, each with the parameter its
+    /// modifier is addressed by: itself, except for a bypass mode and an
+    /// LFO type, whose modifier sits on a parameter of its own.
+    pub modifiers: Vec<(u16, u16)>,
 }
 
 /// Parameter of every block that names its type or model.
@@ -171,7 +175,8 @@ fn layout(value: &Value) -> Layout {
             pages: list(&variant["pages"]).map(page).collect(),
         })
         .collect();
-    Layout { select, variants }
+    let pair = |pair: &Value| Some((pair.get(0)?.as_u64()? as u16, pair.get(1)?.as_u64()? as u16));
+    Layout { select, variants, modifiers: list(&value["mod"]).filter_map(pair).collect() }
 }
 
 #[allow(clippy::expect_used)] // embedded data, checked by tests
@@ -188,6 +193,19 @@ fn table() -> &'static BTreeMap<u8, Layout> {
 /// The editor layout of an effect type, if one is known.
 pub fn for_effect(effect_type: u8) -> Option<&'static Layout> {
     table().get(&effect_type).filter(|layout| !layout.variants.is_empty())
+}
+
+/// The parameter that addresses the modifier of `param`, if it takes one.
+/// The answer for that addressing parameter itself is the same.
+pub fn modifier_param(effect_type: u8, param: u16) -> Option<u16> {
+    let pairs = &table().get(&effect_type)?.modifiers;
+    pairs.iter().find(|pair| pair.0 == param).or_else(|| pairs.iter().find(|pair| pair.1 == param)).map(|pair| pair.1)
+}
+
+/// The parameter a modifier addressed by `at` belongs to: the control it is opened from.
+pub fn modifier_owner(effect_type: u8, at: u16) -> u16 {
+    let pairs = table().get(&effect_type).map(|layout| layout.modifiers.as_slice()).unwrap_or_default();
+    pairs.iter().find(|pair| pair.1 == at).map_or(at, |pair| pair.0)
 }
 
 /// Raw value and display text of each parameter of a block, by ID.
@@ -371,6 +389,22 @@ mod tests {
         assert!(amp.contains(&("Speaker", Some("speaker"))));
         assert_eq!(amp.iter().filter(|(_, graph)| graph.is_some()).count(), 1);
         assert_eq!(for_effect(18).unwrap().variants[0].pages[0].graph.as_deref(), Some("filter"));
+    }
+
+    #[test]
+    fn modifiable_parameters() {
+        let id = |name| params::id(5, name).unwrap();
+        assert_eq!(modifier_param(5, id("DISTORT_DRIVE")), Some(id("DISTORT_DRIVE")));
+        // A switch can take one; the amp's type and its bass cannot.
+        assert_eq!(modifier_param(5, id("DISTORT_BOOST")), Some(id("DISTORT_BOOST")));
+        assert_eq!(modifier_param(5, id("DISTORT_TYPE")), None);
+        assert_eq!(modifier_param(5, id("DISTORT_BASS")), None);
+        // The bypass mode's modifier sits on the shared bypass control.
+        let (mode, at) = (id("DISTORT_BYPASSMODE"), params::id(5, "GLOBAL_BYPCTRL").unwrap());
+        assert_eq!((modifier_param(5, mode), modifier_param(5, at)), (Some(at), Some(at)));
+        assert_eq!((modifier_owner(5, at), modifier_owner(5, 1)), (mode, 1));
+        assert_eq!(modifier_param(200, 0), None);
+        assert_eq!(table().values().map(|layout| layout.modifiers.len()).sum::<usize>(), 296);
     }
 
     #[test]

@@ -81,8 +81,15 @@ fn highest(selector: u16, firmware: Option<(u8, u8)>) -> u16 {
     }
 }
 
+/// The parameter a modifier is opened from: the one it is addressed by,
+/// except for a bypass mode and an LFO type.
+fn owner(address: ParamAddress) -> u16 {
+    blocks::by_id(address.block).map_or(address.param, |b| layouts::modifier_owner(b.effect_type, address.param))
+}
+
 /// A parameter as the history names it, such as "Amp 1 Drive".
 fn param_label(address: ParamAddress) -> String {
+    let address = ParamAddress { block: address.block, param: owner(address) };
     let name = blocks::by_id(address.block).map(|b| params::label(b.effect_type, address.param));
     format!("{} {}", blocks::label(address.block), name.unwrap_or_default()).trim_end().to_owned()
 }
@@ -249,9 +256,10 @@ impl Engine {
         json!({
             "block": open.address.block,
             "block_name": blocks::label(open.address.block),
-            "param": open.address.param,
-            "name": effect.and_then(|t| params::name(t, open.address.param)),
-            "label": effect.map(|t| params::label(t, open.address.param)),
+            "param": owner(open.address),
+            "at": open.address.param,
+            "name": effect.and_then(|t| params::name(t, owner(open.address))),
+            "label": effect.map(|t| params::label(t, owner(open.address))),
             "attached": open.attached(),
             "fields": fields,
             "graph": open.curve(),
@@ -280,11 +288,14 @@ fn target(engine: &Engine, args: &Args<'_>) -> Result<ParamAddress, CommandError
     }
     let block = engine.block_arg(args)?;
     let param = engine.param_arg(args, block)?;
-    // A unit answers for a list or a switch as for any parameter, so the
-    // editor is the one to say that they take no modifier.
-    if blocks::by_id(block).is_some_and(|b| layouts::is_stepped(b.effect_type, param)) {
-        return Err(CommandError::BadParam { name: "param", problem: "lists and switches take no modifier".into() });
-    }
+    // A unit answers for any parameter as if it could have a modifier, so
+    // the editor is the one to say which can. A bypass mode and an LFO type
+    // keep theirs on a parameter of its own.
+    let at = blocks::by_id(block).and_then(|b| layouts::modifier_param(b.effect_type, param));
+    let param = at.ok_or_else(|| CommandError::BadParam {
+        name: "param",
+        problem: format!("{} takes no modifier", param_label(ParamAddress { block, param })),
+    })?;
     Ok(ParamAddress { block, param })
 }
 
@@ -379,8 +390,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         menu: "",
         shortcut: "",
         doc: "Read the modifier of a parameter: its source, range, curve points and the rest, each with \
-              the device's own text, and a sketch of the curve. Only reads. Lists and switches take \
-              no modifier.",
+              the device's own text, and a sketch of the curve. Only reads. Refused for a \
+              parameter that takes no modifier, and by the device once the preset holds 24 modifiers \
+              and this parameter has none.",
         params: &[BLOCK, PARAM],
         enabled: connected,
         run: open,

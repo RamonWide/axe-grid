@@ -50,6 +50,12 @@ pub const PRESET_NAME_LEN: usize = 32;
 /// Fields a modifier has: selectors 0 to 14. A unit stopped answering
 /// altogether when asked for selector 15, so nothing above 14 is ever sent.
 pub const MODIFIER_FIELDS: u16 = 15;
+/// Modifiers a preset holds. With that many in use a unit answers every
+/// modifier message for a parameter that has none, a read included, with
+/// [`STATUS_NO_MODIFIERS_LEFT`].
+pub const MAX_MODIFIERS: usize = 24;
+/// Status code a unit gave for a twenty-fifth modifier.
+pub const STATUS_NO_MODIFIERS_LEFT: u8 = 9;
 
 /// The device families the editor supports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

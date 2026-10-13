@@ -524,7 +524,7 @@ Make a block's X set the same as its Y set. The block ends on the set it was on.
 
 ### `modifier.open`
 
-Read the modifier of a parameter: its source, range, curve points and the rest, each with the device's own text, and a sketch of the curve. Only reads. Lists and switches take no modifier.
+Read the modifier of a parameter: its source, range, curve points and the rest, each with the device's own text, and a sketch of the curve. Only reads. Refused for a parameter that takes no modifier, and by the device once the preset holds 24 modifiers and this parameter has none.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|

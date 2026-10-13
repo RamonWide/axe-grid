@@ -393,7 +393,21 @@ selector 0 was 0 was answered with 40000 and `61.0 %`, and read back as 32767
 straight afterwards. To bring back a removed modifier, set the source first
 and the fields after it.
 
-[?] How many modifiers a preset may hold (status `NO_MODIFIERS_LEFT` exists).
+[H] **A preset holds 24 modifiers.** With sources set on 24 parameters of
+Delay 1 and Amp 1, setting one on a twenty-fifth was answered with status
+`64 07 09`, and so was a plain read (`set = 0`) of a parameter without a
+modifier. The 24 in use still answered. After one was removed, another could
+be attached, and the one after that was refused again. [P] Code 9 is
+therefore `NO_MODIFIERS_LEFT`.
+
+[B] Which parameters take a modifier is not something a unit reports. The
+original editor carries a list of them, 296 in all, reproduced in
+`layouts.json` under `mod`. Two kinds are addressed through another
+parameter: a block's bypass mode through shared parameter 255
+(`GLOBAL_BYPCTRL`), and the type of LFO 1 and LFO 2 through their run
+controls. [H] On the same unit, parameter 255 of Amp 1 and the amp's boost
+switch (parameter 40) each took source 10 and kept it; their selector 2 read
+65534 with the text `ON`.
 
 [P] The owner's manual lists 23 sources besides none (four LFO outputs, two
 ADSRs, the sequencer, the envelope follower, the pitch detector, twelve

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use axegrid_model::Grid;
 use axegrid_sysex::{
     function, BlockState, Dump, DumpError, DumpKind, Frame, Model, ModifierValue, ParamAddress, ParamInfo, ParamValue,
-    Reply, Request, MODIFIER_FIELDS,
+    Reply, Request, MAX_MODIFIERS, MODIFIER_FIELDS, STATUS_NO_MODIFIERS_LEFT,
 };
 
 /// A bidirectional stream of complete SysEx messages.
@@ -44,6 +44,9 @@ impl fmt::Display for SessionError {
         match self {
             Self::Io(e) => write!(f, "MIDI I/O failed: {e}"),
             Self::Timeout { function } => write!(f, "no reply to function {function:#04X}"),
+            Self::Rejected { function: function::MODIFIER, code: STATUS_NO_MODIFIERS_LEFT } => {
+                write!(f, "the preset already has {MAX_MODIFIERS} modifiers, the most a unit holds: remove one first")
+            }
             Self::Rejected { function, code } => {
                 write!(f, "device rejected function {function:#04X} with status {code}")
             }

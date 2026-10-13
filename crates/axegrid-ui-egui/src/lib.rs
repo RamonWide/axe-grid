@@ -189,6 +189,8 @@ struct ControlView {
     choices: Option<Vec<String>>,
     /// Parameters a push button sets.
     sets: Vec<u64>,
+    /// The parameter takes a modifier.
+    modifier: bool,
 }
 
 impl ControlView {
@@ -206,6 +208,7 @@ impl ControlView {
             text: text("text"),
             choices: serde_json::from_value(value["choices"].clone()).ok().flatten(),
             sets: value["sets"].as_array().into_iter().flatten().filter_map(Value::as_u64).collect(),
+            modifier: value["modifier"] == true,
         }
     }
 }
@@ -1140,27 +1143,33 @@ impl Shell {
     fn control(ui: &mut egui::Ui, block: u16, cell: Vec2, control: &ControlView, actions: &mut Vec<Action>) {
         let set = |value: u32| ("param.set", json!({ "block": block, "param": control.id, "value": value }));
         // A knob or a fader is either moved to a raw value or given a typed one.
+        let modifier = || ("modifier.open", json!({ "block": block, "param": control.id }));
         let changed = |change: knob::Change| match change {
-            knob::Change::Raw(value) => set(value),
+            knob::Change::Raw(value) => Some(set(value)),
             knob::Change::Typed(value) => {
-                ("param.set_displayed", json!({ "block": block, "param": control.id, "value": value }))
+                Some(("param.set_displayed", json!({ "block": block, "param": control.id, "value": value })))
             }
-            knob::Change::More => ("modifier.open", json!({ "block": block, "param": control.id })),
+            knob::Change::More => control.modifier.then(modifier),
         };
+        // A switch or a list that takes a modifier opens it the same way,
+        // without the right click being taken from the control itself.
+        let over = ui.rect_contains_pointer(Rect::from_min_size(ui.cursor().min, cell));
+        let stepped = matches!(control.kind.as_str(), "toggle" | "choice");
+        if control.modifier && stepped && over && ui.input(|input| input.pointer.secondary_clicked()) {
+            actions.push(modifier());
+        }
         match control.kind.as_str() {
             "spacer" => {
                 ui.allocate_exact_size(cell, Sense::hover());
             }
             "knob" => {
-                if let Some(change) = knob::knob(ui, cell, &control.label, &control.text, control.raw, control.max) {
-                    actions.push(changed(change));
-                }
+                let change = knob::knob(ui, cell, &control.label, &control.text, control.raw, control.max);
+                actions.extend(change.and_then(changed));
             }
             "slider" => {
                 let size = vec2(cell.x * FADER_WIDTH, cell.y * FADER_ROWS);
-                if let Some(change) = knob::fader(ui, size, &control.label, &control.text, control.raw, control.max) {
-                    actions.push(changed(change));
-                }
+                let change = knob::fader(ui, size, &control.label, &control.text, control.raw, control.max);
+                actions.extend(change.and_then(changed));
             }
             "toggle" => {
                 if let Some(on) = knob::switch(ui, cell, &control.label, control.raw != 0) {
@@ -1511,10 +1520,6 @@ impl Shell {
                     ui.label(RichText::new("The curve is a sketch of the settings").small().color(theme::TEXT_DIM));
                 });
             });
-            if !view.state.simulated {
-                let caution = "Changing a modifier has not yet been confirmed on a unit. Save your work first.";
-                ui.label(RichText::new(caution).small().color(theme::DANGER));
-            }
         });
         if !open {
             actions.push(("modifier.close", Value::Null));

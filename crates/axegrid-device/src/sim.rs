@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use axegrid_model::{blocks, defs, grid, layouts, params};
 use axegrid_sysex::codec::{put_uint, Reader};
-use axegrid_sysex::{function, Dump, DumpKind, Frame, Model, MODIFIER_FIELDS};
+use axegrid_sysex::{function, Dump, DumpKind, Frame, Model, MAX_MODIFIERS, MODIFIER_FIELDS, STATUS_NO_MODIFIERS_LEFT};
 
 use crate::session::Transport;
 
@@ -575,6 +575,15 @@ impl SimDevice {
                     return Some(());
                 }
                 let key = (self.current, block, param);
+                // As on a unit: once the preset is full, a parameter without
+                // a modifier gets no answer but this, even to a read.
+                let has_source = |fields: &[u16; MODIFIER_FIELDS as usize]| fields[0] != 0;
+                let used =
+                    self.modifiers.iter().filter(|(k, fields)| k.0 == self.current && has_source(fields)).count();
+                if used >= MAX_MODIFIERS && !self.modifiers.get(&key).is_some_and(has_source) {
+                    self.status(MODIFIER, STATUS_NO_MODIFIERS_LEFT);
+                    return Some(());
+                }
                 let fields = self.modifiers.entry(key).or_insert_with(|| modifier_defaults(block, param));
                 let mut raw = fields[usize::from(field)];
                 if set != 0 {
@@ -728,6 +737,25 @@ mod tests {
         assert!(matches!(err, SessionError::Rejected { function: function::PARAM, code: 1 }));
         // The session is still usable afterwards.
         assert!(session.read_preset().is_ok());
+    }
+
+    #[test]
+    fn a_preset_holds_so_many_modifiers() {
+        let mut session = Session::connect(SimDevice::default()).unwrap();
+        let drive = |param: u16| ParamAddress { block: 106, param };
+        for param in 1..=MAX_MODIFIERS as u16 {
+            assert_eq!(session.set_modifier(drive(param), 0, 1).unwrap().value, 1);
+        }
+        // One more is refused, and so is reading where there is none.
+        let full = SessionError::Rejected { function: function::MODIFIER, code: STATUS_NO_MODIFIERS_LEFT };
+        let err = session.set_modifier(drive(60), 0, 1).unwrap_err();
+        assert_eq!(format!("{err}"), format!("{full}"));
+        assert!(format!("{err}").contains("24 modifiers"));
+        assert!(session.modifier(drive(60), 0).is_err());
+        // The ones in use still answer, and removing one makes room.
+        assert_eq!(session.modifier(drive(3), 0).unwrap().value, 1);
+        session.set_modifier(drive(3), 0, 0).unwrap();
+        assert_eq!(session.set_modifier(drive(60), 0, 2).unwrap().value, 2);
     }
 
     #[test]

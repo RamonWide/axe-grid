@@ -100,7 +100,7 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/axe-grid-routing.png" alt="The routing grid with a delay and a reverb in parallel; the pointer is over the reverb block, which shows an I handle on its left and an O handle on its right, and the delay block's Time and Feedback page is open below" width="100%">
+      <img src="docs/images/axe-grid-routing.png" alt="The routing grid with a delay and a reverb in parallel; the pointer is over the reverb block, which shows an I handle on its left, an O handle on its right and a hint about selecting and moving blocks, and the delay block's Time and Feedback page is open below" width="100%">
       <br>
       <sub>Hovering a block shows its input and output handles. Below, the delay's first page.</sub>
       <h3>Route it the way you think</h3>
@@ -109,7 +109,7 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
       Series, parallel, split and merge: the grid shows what the unit holds, read back after every change.
     </td>
     <td width="50%" valign="top">
-      <img src="docs/images/axe-grid-parametric-eq.png" alt="The Parametric EQ block's first page: frequency, Q and gain knobs for bands 1 and 5 on the left and a frequency-response curve with five numbered band markers on the right, showing a low shelf boost and a high shelf boost" width="100%">
+      <img src="docs/images/axe-grid-parametric-eq.png" alt="The Parametric EQ block's first page: frequency, Q and gain knobs for bands 1 and 5 on the left and a frequency-response curve with five numbered band markers on the right, showing a low shelf boost, a dip in the mids and a high shelf boost" width="100%">
       <br>
       <sub>The Parametric EQ's curve follows the knobs as you turn them.</sub>
       <h3>Every page, every knob</h3>
@@ -136,6 +136,26 @@ Every screenshot here is the real app, connected to an Axe-Fx II XL.
       Preset number and name, scenes, <b>Tuner</b>, <b>Tap</b> tempo with a beat light, an editable BPM, and a CPU meter that updates as you add blocks.
       <br><br>
       Looper transport buttons light up from the unit's own status, and Tone Match starts both captures with one press.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/axe-grid-amp-browser.png" alt="The amp model browser open over the app: a search box and five columns of numbered amp models read from the unit, with the current model highlighted" width="100%">
+      <br>
+      <sub>The amp model browser. The names are read from the unit.</sub>
+      <h3>Browse long lists</h3>
+      Amp models, cabs and every other long list open in a window of numbered columns. Type a name or a number to narrow it, click to hear a choice, and double-click or press Enter to keep it.
+      <br><br>
+      The <b>Presets</b> and <b>Cabs</b> windows use the same columns, and their names are kept on your computer, so they are there the moment the unit connects.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/axe-grid-multi-select.png" alt="The routing grid with the drive, amp and cab blocks outlined as one selection" width="100%">
+      <br>
+      <sub>Drive, amp and cab selected together.</sub>
+      <h3>Move blocks together</h3>
+      Ctrl+click or Shift+click blocks, or drag a box around them, then drag the group or nudge it with Alt and the arrow keys. The cables between the blocks you move go with them.
+      <br><br>
+      A group move is one step to undo.
     </td>
   </tr>
 </table>

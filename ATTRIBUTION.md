@@ -13,7 +13,7 @@ Every file in this repository that was not written for it is listed here.
 
 | `assets/icon/axe-grid.svg` | The app icon: a routing grid with one cable | Drawn for this project | MIT, with the rest of the repository |
 | `assets/icon/axe-grid.png`, `assets/icon/axe-grid.ico` | The same icon as bitmaps, for the window, the Windows executables and shortcuts | Rendered from `assets/icon/axe-grid.svg` by `scripts/render-icon.py` | MIT, with the rest of the repository |
-| `docs/images/axe-grid-amp.png`, `docs/images/axe-grid-parametric-eq.png`, `docs/images/axe-grid-routing.png`, `docs/images/axe-grid-output-mixer.png`, `docs/images/axe-grid-tuner.png` | Screenshots of Axe-Grid for the README | Captured from this project's own app, connected to a maintainer's Axe-Fx II XL showing a preset built for the purpose. The amp type name visible in one of them is text the device reported at run time | MIT, with the rest of the repository |
+| `docs/images/axe-grid-amp.png`, `docs/images/axe-grid-parametric-eq.png`, `docs/images/axe-grid-routing.png`, `docs/images/axe-grid-output-mixer.png`, `docs/images/axe-grid-tuner.png`, `docs/images/axe-grid-amp-browser.png`, `docs/images/axe-grid-multi-select.png` | Screenshots of Axe-Grid for the README | Captured from this project's own app, connected to a maintainer's Axe-Fx II XL showing a preset built for the purpose. The amp type name visible in one of them, and the list of amp model names in the amp browser screenshot, are text the device reported at run time | MIT, with the rest of the repository |
 
 There are no fonts, sounds, presets or impulse responses in this repository,
 and no images other than the icon (in three formats) and the screenshots listed above. The

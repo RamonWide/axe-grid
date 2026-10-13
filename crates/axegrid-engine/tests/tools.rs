@@ -218,6 +218,10 @@ fn a_modifier_is_attached_edited_and_removed() {
     assert_eq!(opened["graph"]["points"][0], json!([0.0, 0.0]));
     assert_eq!(engine.inspect()["modifier"]["param"], DRIVE);
 
+    // Without a source the device keeps no field, so none is sent.
+    let early = engine.run("modifier.set", &json!({ "field": "start", "value": 9 })).unwrap_err();
+    assert!(matches!(early, CommandError::BadParam { name: "field", .. }), "{early}");
+
     // The open modifier is the one the other commands act on.
     let attached = engine.run("modifier.attach", &json!({ "source": 3 })).unwrap();
     assert_eq!(attached["attached"], true);

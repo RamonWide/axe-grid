@@ -537,7 +537,7 @@ Close the modifier window.
 
 ### `modifier.attach`
 
-Attach a controller to a parameter in the edit buffer by setting the modifier's source. The device names the sources; 0 is none, and the numbering is the device's own. Confirmed on a unit with its first source.
+Attach a controller to a parameter in the edit buffer by setting the modifier's source. The device names the sources; 0 is none, and the numbering is the device's own. Sources 1 to 23 are confirmed on a unit; none past 23 is sent.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|
@@ -556,7 +556,7 @@ Take the modifier off a parameter in the edit buffer by setting its source to no
 
 ### `modifier.set`
 
-Set one field of a modifier to a raw value and return what the device applied, with its text. Setting the source to 0 removes the modifier, as modifier.remove does.
+Set one field of a modifier to a raw value and return what the device applied, with its text. Setting the source to 0 removes the modifier, as modifier.remove does. The other fields need a source first: the device keeps none of them without one.
 
 | Parameter | Type | Required | Meaning |
 |---|---|---|---|

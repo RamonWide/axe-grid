@@ -200,6 +200,22 @@ impl Engine {
                 problem: format!("{raw} is past {}, the highest this field is sent", highest(selector)),
             });
         }
+        // Without a source the device answers with the value asked for and
+        // keeps its default, so there is nothing to set.
+        if selector != SOURCE {
+            let attached = match self.modifier.as_ref().filter(|open| open.address == address) {
+                Some(open) => open.attached(),
+                None => self.session()?.modifier(address, SOURCE)?.value != u32::from(NO_SOURCE),
+            };
+            if !attached {
+                return Err(CommandError::BadParam {
+                    name: "field",
+                    problem:
+                        "the parameter has no modifier: attach a source first, the device keeps no field without one"
+                            .into(),
+                });
+            }
+        }
         let applied = self.session()?.set_modifier(address, selector, raw)?;
         self.note_modifier(&applied);
         if let (Ok(before), Ok(after)) = (u16::try_from(before), u16::try_from(applied.value)) {
@@ -373,8 +389,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         menu: "",
         shortcut: "",
         doc: "Attach a controller to a parameter in the edit buffer by setting the modifier's source. The \
-              device names the sources; 0 is none, and the numbering is the device's own. Confirmed on a \
-              unit with its first source.",
+              device names the sources; 0 is none, and the numbering is the device's own. Sources 1 to \
+              23 are confirmed on a unit; none past 23 is sent.",
         params: &[
             BLOCK,
             PARAM,
@@ -401,7 +417,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         menu: "",
         shortcut: "",
         doc: "Set one field of a modifier to a raw value and return what the device applied, with its \
-              text. Setting the source to 0 removes the modifier, as modifier.remove does.",
+              text. Setting the source to 0 removes the modifier, as modifier.remove does. The other \
+              fields need a source first: the device keeps none of them without one.",
         params: &[
             BLOCK,
             PARAM,

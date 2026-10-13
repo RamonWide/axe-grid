@@ -349,8 +349,38 @@ So a modifier is attached by setting selector 0 to a source other than 0 and
 removed by setting it back to 0, and **removing it puts its other fields back
 to their defaults**. The preset-edited flag (`2A`) is set afterwards.
 
-[?] The numbering of the sources past the first and their number, whether a
-field can be set while the source is none, what the device answers for a
+[H] The same unit, the same way, named these sources when selector 0 was set
+to each of 1 to 23 in turn:
+
+| Value | Text | Value | Text | Value | Text |
+|---|---|---|---|---|---|
+| 1 | `LFO 1A` | 9 | `PITCH` | 17 | `EXTRN 8` |
+| 2 | `LFO 1B` | 10 | `EXTRN 1` | 18 | `EXTRN 9` |
+| 3 | `LFO 2A` | 11 | `EXTRN 2` | 19 | `EXTRN 10` |
+| 4 | `LFO 2B` | 12 | `EXTRN 3` | 20 | `EXTRN 11` |
+| 5 | `ADSR 1` | 13 | `EXTRN 4` | 21 | `EXTRN 12` |
+| 6 | `ADSR 2` | 14 | `EXTRN 5` | 22 | `MANUAL A` |
+| 7 | `SEQNCR` | 15 | `EXTRN 6` | 23 | `MANUAL B` |
+| 8 | `ENVLPE` | 16 | `EXTRN 7` | | |
+
+[H] With a source attached every other field took a value once and kept it
+on reading back: selector 1 = 10000 (`1.53`), 2 = 50000 (`7.63`), 3 = 5000
+(`7.6 %`), 5 = 60000 (`91.6 %`), 6 = 20000 (`30.5 %`), 7 = 2000 (`31 ms`),
+11 = 1 (`ON`), 12 = 1000 (`6.4 %`), 13 = 40000 (`1.662`), 14 = 20000
+(`-39.0 %`), and selector 10 = 2 to 6 (`MED SPD`, `FAST SPD`, `SLOW POS`,
+`MED POS`, `FAST POS`). Selectors 8 and 9 were not set. [P] From these and
+the defaults: damping runs 0 to 1000 ms and the off value 5 to 95 %, both in
+a straight line; the offset runs -100 to +100 % around 32767; the scale is
+logarithmic, 0.1 to 10 with 1 at 32767.
+
+[H] **Without a source a field is not kept.** Selector 4 = 40000 sent while
+selector 0 was 0 was answered with 40000 and `61.0 %`, and read back as 32767
+straight afterwards. To bring back a removed modifier, set the source first
+and the fields after it.
+
+[?] Whether there are sources past 23 (the last two read `MANUAL`, where the
+owner's manual ends on two scene controllers, so the list on this firmware
+may be longer; none past 23 has been sent), what the device answers for a
 parameter that cannot take a modifier, and how many modifiers a preset may
 hold (status `NO_MODIFIERS_LEFT` exists).
 

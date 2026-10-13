@@ -1447,6 +1447,7 @@ impl Shell {
         let empty = Vec::new();
         let fields = modifier["fields"].as_array().unwrap_or(&empty);
         let set = |key: &str, value: u64| ("modifier.set", json!({ "field": key, "value": value }));
+        let attached = modifier["attached"] == true;
         let mut open = true;
         let window = egui::Window::new(title).id(egui::Id::new("modifier")).collapsible(false).resizable(false);
         window.open(&mut open).show(ctx, |ui| {
@@ -1454,12 +1455,14 @@ impl Shell {
                 for field in fields.iter().filter(|field| field["kind"] == "step") {
                     let (key, raw) = (text(&field["key"]), field["value"].as_u64().unwrap_or(0));
                     ui.label(RichText::new(text(&field["label"])).small().color(theme::TEXT_DIM));
-                    if ui.add_enabled(raw > 0, egui::Button::new("◀").small()).clicked() {
+                    // Only the source can be set before there is one.
+                    let usable = attached || key == "source";
+                    if ui.add_enabled(usable && raw > 0, egui::Button::new("◀").small()).clicked() {
                         actions.push(set(&key, raw - 1));
                     }
                     ui.label(RichText::new(text(&field["text"])).monospace());
                     let last = field["max"].as_u64().unwrap_or(0);
-                    if ui.add_enabled(raw < last, egui::Button::new("▶").small()).clicked() {
+                    if ui.add_enabled(usable && raw < last, egui::Button::new("▶").small()).clicked() {
                         actions.push(set(&key, raw + 1));
                     }
                     ui.separator();
@@ -1468,6 +1471,9 @@ impl Shell {
             ui.add_space(4.0);
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
+                    if !attached {
+                        ui.disable();
+                    }
                     let knobs: Vec<&Value> = fields.iter().filter(|field| field["kind"] == "knob").collect();
                     for row in knobs.chunks(MODIFIER_ROW) {
                         ui.horizontal(|ui| {
